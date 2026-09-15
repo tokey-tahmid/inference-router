@@ -68,6 +68,18 @@ log "=== fmt (apply, then verify) ==="
 cargo fmt --all
 cargo fmt --all -- --check
 
+# Resolve first and report what was selected. The MSRV-aware resolver only runs
+# when there is no lock to reuse: a Cargo.lock generated before rust-version was
+# pinned keeps its MSRV-incompatible selections and the build fails identically
+# to having no resolver at all (job 5211452 failed exactly this way).
+log "=== resolve (MSRV-aware) ==="
+if [[ ! -f Cargo.lock ]]; then
+    log "no Cargo.lock: resolving from scratch against rust-version"
+fi
+cargo generate-lockfile
+log "selected versions for the MSRV-sensitive chain:"
+grep -A1 -E '^name = "(idna|idna_adapter|url|icu_properties|icu_normalizer|icu_collections|icu_provider)"' Cargo.lock | sed 's/^/  /'
+
 log "=== build ==="
 cargo build --release --all-targets
 
