@@ -386,7 +386,7 @@ async fn least_loaded_prefers_the_idle_replica_under_real_load() {
     a.set_inter_chunk_delay(60);
     b.set_chunks(2);
 
-    let (router, _state) = spawn_router(config_for(&[&a, &b])).await;
+    let (router, state) = spawn_router(config_for(&[&a, &b])).await;
     let client = reqwest::Client::new();
     set_policy(
         &client,
@@ -395,8 +395,10 @@ async fn least_loaded_prefers_the_idle_replica_under_real_load() {
     )
     .await;
 
-    // Pin load onto whichever replica the first request lands on by holding
-    // several undrained streams open against it.
+    // Open several streams and leave them undrained. r0's mock emits 30 chunks
+    // 60 ms apart, so streams landing there stay in flight for ~1.8 s; r1's
+    // emits 2 chunks and drains into the socket buffer almost immediately. The
+    // fleet therefore settles with load concentrated on r0.
     let mut held = Vec::new();
     for _ in 0..6 {
         held.push(
@@ -408,9 +410,20 @@ async fn least_loaded_prefers_the_idle_replica_under_real_load() {
                 .unwrap(),
         );
     }
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // Whatever the split so far, the next requests must go to the lighter side.
+    // Read the actual in-flight split rather than assuming which side is busy:
+    // which replica ends up loaded depends on the rotating tiebreak's starting
+    // point, and hard-coding it would make this test pass or fail by luck.
+    let loads: Vec<usize> = (0..2).map(|i| state.fleet.get(i).inflight()).collect();
+    let busy = if loads[0] >= loads[1] { 0 } else { 1 };
+    let idle = 1 - busy;
+    assert!(
+        loads[busy] > loads[idle],
+        "test setup did not produce an imbalance: {loads:?}"
+    );
+    let idle_id = format!("r{idle}");
+
     let mut tail = HashMap::new();
     for _ in 0..6 {
         let r = client
@@ -429,12 +442,21 @@ async fn least_loaded_prefers_the_idle_replica_under_real_load() {
         *tail.entry(id).or_insert(0usize) += 1;
         let _ = r.bytes().await;
     }
-    // Held streams occupy one or both replicas; least_loaded must not have piled
-    // every tail request onto the single most-loaded replica.
-    let max = tail.values().copied().max().unwrap_or(0);
-    assert!(
-        max < 6,
-        "least_loaded sent every request to one replica: {tail:?}"
+
+    // Every tail request is drained before the next is sent, so at each decision
+    // the idle replica is genuinely the least loaded and least_loaded must
+    // choose it every time.
+    //
+    // An earlier version of this test asserted the opposite (`max < 6`, i.e. the
+    // requests must be *spread*), which contradicts the policy's entire purpose:
+    // concentrating on the idle replica is the correct behaviour, and the
+    // assertion would have been satisfied only by a least_loaded that ignored
+    // load.
+    assert_eq!(
+        tail.get(&idle_id).copied().unwrap_or(0),
+        6,
+        "least_loaded must send every request to the idle replica {idle_id} \
+         (in-flight was {loads:?}), got {tail:?}"
     );
     drop(held);
 }

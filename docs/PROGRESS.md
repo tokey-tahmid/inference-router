@@ -31,7 +31,17 @@ That is the gap that matters, and it is stated plainly rather than dressed up.
 
 ## What has actually been measured
 
-### Single-replica KV cache envelope (job `5213921`, arm A)
+### Single-replica KV cache envelope (job `5213921`, arm A, on `mel2036`)
+
+> **Provenance caveat.** `sacct -j 5213921` reports **`TIMEOUT`** at `00:30:36`,
+> not `COMPLETED`, and a reader checking the job state deserves to know why the
+> numbers below are quoted anyway. The probe went to `qos=test` (30-minute
+> ceiling) and has three arms. **The figures below are printed by vLLM during
+> engine startup**, before any load is applied; arm A's replica was healthy at
+> 199 s and emitted its KV cache sizing then, and that output is complete in
+> `ir_density_5213921.out`. What the timeout truncated is **arm C** (four
+> replicas, one per GPU), which never ran at all, and the tail of arm B. It did
+> not interrupt or invalidate the arm-A measurement being quoted.
 
 One Qwen2.5-7B-Instruct replica, bf16, TP=1, `gpu_memory_utilization=0.90` on an
 A100-SXM4-40GB:
@@ -55,13 +65,29 @@ ValueError: No available memory for the cache blocks.
 
 That result is **not** usable as "two replicas do not fit", because the launches
 were 30 s apart against a ~200 s weight load, so both profiled free memory while
-the other was still allocating. The probe has been rewritten to launch
-sequentially (first fully healthy before the second starts) and to give both
-replicas the same half-card budget. **Re-measurement pending** as stage 2 of the
-full-experiment job.
+the other was still allocating.
 
-The job also timed out: it was submitted to `qos=test`, whose ceiling is 30
-minutes, and never reached its third arm.
+The first rewrite was wrong too, in a different way: it kept the 0.90-util
+replica alive and started the "second" one at 0.45 alongside it. Arm A measured
+that replica occupying 36,126 MiB of 40 GB, so there was never room for a second
+15.2 GB weight load, and the probe could only have returned a foregone "no" that
+said nothing about the topology. Both flaws are fixed: the probe now tears down
+first and gives **both** replicas the same half-card budget, launched
+sequentially. **Re-measurement pending** as stage 2 of the full-experiment job.
+
+### Decision taken: density is reported separately, never pooled with the matrix
+
+The matrix stays on the **1-replica-per-card** fleet, and replica density is
+reported as its own capacity finding.
+
+The reason is that density constrains the **workload**, not merely the topology,
+and that is the non-obvious part. A solo replica has ~19 GB of KV cache
+(357,520 tokens, 87.29x concurrency at 4k). Two half-card replicas would have
+roughly 3 GB each after weights, an order of magnitude less. A fleet built that
+way cannot admit the same concurrency or the same context lengths at all, so the
+two topologies are not two ways of serving one workload; they are two different
+serving envelopes. A pooled figure would be comparing routing policies across
+configurations that differ in what they can physically admit.
 
 ### Build and toolchain (jobs `5211435`-`5213920`)
 

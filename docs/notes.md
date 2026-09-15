@@ -57,14 +57,32 @@ Build job `5213920`: 64 passed, 2 failed. Both failures were mistakes in the
 
 **1. The FNV vector was FNV-1, not FNV-1a.** `fnv1a_matches_published_vectors`
 asserted `fnv1a64(b"foobar") == 0x85267b256108 9d4d`. The implementation
-produced `0x85944171f73967e8`, which an independent reimplementation confirms is
-the correct FNV-**1a** digest. `0x8526...` is the FNV-1 digest; the two
-algorithms differ only in the order of the xor and the multiply.
+produced `0x85944171f73967e8`.
 
-This is a good argument for test vectors over round-trip properties. A test that
-only asserted "the same input hashes the same way twice" would have passed
-against either algorithm, and the hash choice matters here precisely because it
-has to be *stable across toolchains and machines* for two runs of the same
+**How that was established, which matters more than the fix.** The tempting move
+when a test fails against an implementation you just wrote is to paste the
+observed value into the expectation, and doing that here would have made the
+test permanently worthless: it would then assert only "this function is
+deterministic", which is true of any hash including a wrong one. Instead the
+digest was recomputed from the FNV-1a definition in a throwaway Python
+implementation written from the spec, not from the Rust:
+
+```python
+h = 0xcbf29ce484222325
+for c in b"foobar":
+    h ^= c
+    h = (h * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF   # -> 0x85944171f73967e8
+```
+
+That independently reproduces the Rust output and the two other vectors
+(`""`, `"a"`) that were already passing. `0x8526...` is the FNV-**1** digest;
+the two algorithms differ only in whether the xor comes before or after the
+multiply, which is exactly why the wrong constant looks plausible.
+
+The general point: a test vector beats a round-trip property here. A test
+asserting only "the same input hashes the same way twice" would have passed
+against either algorithm, and the hash choice is load-bearing precisely because
+it has to be stable across toolchains and machines for two runs of the same
 experiment to be comparable.
 
 **2. The bounded-affinity exhaustion test could not exhaust.** The test loaded
@@ -82,7 +100,25 @@ rather than a specific index, since the tiebreak among equals rotates by design.
 
 ## 2026-09-15 — two 7B replicas on one 40 GB card: the first attempt failed, and the failure mode is instructive
 
-Density probe job `5213921` (timed out in `qos=test`'s 30 min after two arms).
+Density probe job `5213921`, on `mel2036`.
+
+### Provenance caveat: this job's `sacct` state is TIMEOUT, and the numbers are still sound
+
+`sacct -j 5213921` reports `TIMEOUT` at `00:30:36`, not `COMPLETED`. A reader
+checking the job state needs to know why the arm-A figures below are quoted
+anyway, so, plainly:
+
+- The probe was submitted to `qos=test`, whose ceiling is 30 minutes. It has
+  three arms and never reached the third.
+- **The numbers quoted below are emitted by vLLM during engine startup**, before
+  any load is applied. Arm A's replica was healthy at 199 s and printed its KV
+  cache sizing then; that line is in `ir_density_5213921.out` and is complete.
+- What the timeout truncated is **arm C** (four replicas, one per GPU), which
+  never ran, and the tail of arm B. It did not truncate, interrupt, or
+  invalidate the arm-A measurement.
+
+So the correct reading is: arm A measured, arm B attempted and inconclusive (see
+below, and the attempt was flawed on its own terms), arm C **not measured**.
 
 **Arm A — one replica, `gpu_memory_utilization=0.90`: healthy in 199 s.**
 
@@ -123,10 +159,41 @@ a usable replica.
 Those are two different findings and the first attempt could not tell them
 apart, so the probe was rewritten to launch **sequentially**: the first replica
 must be fully healthy before the second starts. That removes the race and makes
-the answer attributable. Re-run is staged as step 2 of
-`slurm/run_full_experiment.sh`, and the finding is written to `results/raw/` as
-an artifact rather than left in a log, because the topology decision depends on
-it.
+the answer attributable.
+
+### The rewrite was wrong too, in a different way
+
+Worth recording because it is the more embarrassing of the two and the easier
+one to have shipped. The sequential rewrite kept the stage-1 replica alive (it
+was already up at `gpu_memory_utilization=0.90`) and started the "second"
+replica alongside it at 0.45.
+
+That is not a two-replicas-per-card test at all. Arm A measured the 0.90 replica
+occupying **36,126 MiB of the card's 40 GB**. There is no room for a second
+15.2 GB weight load in the ~4 GB left, so the experiment could only ever have
+returned "no", and that "no" would have been a fact about 0.90 + 0.45 > 1.0
+rather than about whether the topology is viable.
+
+It would also have looked like a *confirmation* of the first attempt's failure,
+which is what makes it dangerous: two independent-looking runs agreeing on a
+wrong answer. The fixed probe gives both replicas the same half-card budget
+(0.45 each, falling back to 0.42) and tears the stage-1 replica down first.
+
+Re-run is staged as step 2 of `slurm/run_full_experiment.sh`, and the finding is
+written to `results/raw/` as an artifact rather than left in a log, because the
+topology decision depends on it.
+
+### What the answer will constrain, either way
+
+This is a capacity finding about the **workload**, not only about the topology,
+and that is the non-obvious part. A solo replica has ~19 GB of KV cache
+(357,520 tokens, 87.29x concurrency at 4k). Two half-card replicas would each
+have roughly 3 GB after weights, an order of magnitude less. A fleet built that
+way cannot admit the same concurrency or the same context lengths, so the two
+topologies are not two ways of serving one workload: they are two different
+serving envelopes. Pooling them in a routing figure would compare policies
+across configurations that differ in what they can physically admit, which is
+why the matrix stays on the 1-per-card fleet and density is reported separately.
 
 **Operational note:** the probe was submitted to `qos=test`, whose limit is 30
 minutes, and it timed out before its third arm. At ~200 s per replica cold start

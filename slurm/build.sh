@@ -87,7 +87,12 @@ log "=== clippy ==="
 cargo clippy --all-targets --all-features -- -D warnings
 
 log "=== test ==="
-cargo test --release -- --nocapture
+# --no-fail-fast: run EVERY test binary even when one fails. Without it cargo
+# stops at the first failing binary, and in job 5214089 a single wrong assertion
+# in tests/routing.rs meant tests/streaming.rs -- the SSE non-buffering proof,
+# which is the load-bearing test in this repo -- never ran at all and its status
+# was silently unknown.
+cargo test --release --no-fail-fast -- --nocapture
 
 log "=== binary ==="
 ls -la "${CARGO_TARGET_DIR}/release/inference-router"
