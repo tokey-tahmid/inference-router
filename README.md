@@ -254,6 +254,29 @@ Backend and model identifiers are copied verbatim from P1's
 | model | `Qwen/Qwen2.5-7B-Instruct`, revision `a09a35458c702b33eeacc393d103063234e8bc28` |
 | precision | bf16 |
 
+### Replica density constrains the *workload*, not just the topology
+
+The spec asks whether two 7B replicas fit per 40 GB card. The answer matters for
+more than how many boxes to draw in the diagram.
+
+Measured (job `5213921`, arm A): one replica at `gpu_memory_utilization=0.90`
+gets **19.09 GiB of KV cache, 357,520 tokens, 87.29x max concurrency at 4,096
+tokens per request**, occupying 36,126 MiB of the card. Two replicas each asking
+for half the card would have roughly 3 GB apiece once 15.2 GB of bf16 weights
+are subtracted: an order of magnitude less cache each.
+
+That is not a smaller version of the same fleet. A 2-per-card fleet cannot admit
+the same concurrency or the same context lengths, so the two topologies are two
+different **serving envelopes**, not two ways of serving one workload. Pooling
+them into one routing figure would compare policies across configurations that
+differ in what they can physically admit, and part of any measured difference
+would be a difference in what the replicas were allowed to accept in the first
+place.
+
+So the experiment matrix runs on the **1-replica-per-card** fleet, and replica
+density is reported separately as a capacity finding. (The two-per-card
+measurement itself is still pending; see `docs/PROGRESS.md`.)
+
 ### A caveat that applies to every absolute number here
 
 P1 measured that **co-locating four single-GPU replicas on one node is not

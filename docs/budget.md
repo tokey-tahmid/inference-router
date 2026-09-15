@@ -19,10 +19,17 @@ Elapsed times below are from `sacct`; node-hours are `elapsed x AllocNodes`.
 | 5213920 | ir-build | 00:12:16 | 0.204 | FAILED — 64/66 unit tests pass, 2 wrong test expectations |
 | 5213921 | ir-density | 00:30:36 | 0.510 | TIMEOUT in `qos=test` — arms A and B measured, C not reached |
 | 5213922 | ir-verify | — | 0.000 | cancelled, dependency never satisfied |
-| 5214089 | ir-build | in flight | — | — |
-| 5214090 | ir-full | in flight | — | — |
+| 5214089 | ir-build | 00:09:16 | 0.154 | FAILED — 66/66 unit tests pass; 1 integration test asserted the opposite of `least_loaded`'s purpose |
+| 5214090 | ir-full | — | 0.000 | cancelled, dependency never satisfied |
+| 5214119 | ir-build | in flight | — | — |
+| 5214120 | ir-full | in flight | — | — |
 
-**Consumed so far: ~0.86 node-hours** of the ~30 budgeted for P3.
+**Consumed so far: ~1.02 node-hours** of the ~30 budgeted for P3.
+
+Note on job states: `5213921` shows `TIMEOUT` rather than `COMPLETED`. Its
+arm-A measurements are still sound because vLLM emits them at engine startup,
+long before the 30-minute `qos=test` ceiling was hit; what the timeout cost was
+arm C, which never ran. See `docs/notes.md` for the full caveat.
 
 ## Where the budget is going
 
