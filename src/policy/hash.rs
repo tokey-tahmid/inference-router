@@ -104,7 +104,12 @@ mod tests {
         // Reference values from the FNV-1a 64-bit specification.
         assert_eq!(fnv1a64(b""), 0xcbf2_9ce4_8422_2325);
         assert_eq!(fnv1a64(b"a"), 0xaf63_dc4c_8601_ec8c);
-        assert_eq!(fnv1a64(b"foobar"), 0x8526_7b25_6108_9d4d);
+        // 0x85267b256108 9d4d, which an earlier revision of this test asserted,
+        // is the FNV-**1** digest of "foobar", not FNV-1a. The two differ only
+        // in the order of the xor and the multiply, so the mistake is easy to
+        // make and the test caught it against the implementation rather than
+        // the other way round.
+        assert_eq!(fnv1a64(b"foobar"), 0x8594_4171_f739_67e8);
     }
 
     #[test]

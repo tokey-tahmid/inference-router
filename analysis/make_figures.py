@@ -1,0 +1,510 @@
+"""Regenerate every figure and table from results/raw/.
+
+    sbatch slurm/run_analysis.sh          # the one documented command
+
+Reads raw artifacts only. Writes results/figures/ and results/RESULTS.md.
+Nothing here transcribes a number: if a value is not in an artifact, the figure
+shows a gap rather than an estimate.
+
+Plot conventions (workspace CLAUDE.md): 300 dpi, axis units labelled, hardware
+and replica topology in the caption, N and spread shown, median with min/max
+rather than a bare mean.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+from typing import Any, Sequence
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from load import Phase, group, hardware_caption, load_measurements  # noqa: E402
+
+REPO = Path(__file__).resolve().parents[1]
+FIGS = REPO / "results" / "figures"
+
+POLICY_ORDER = [
+    "round_robin",
+    "least_loaded",
+    "prefix_affinity",
+    "prefix_affinity_bounded",
+]
+POLICY_LABEL = {
+    "round_robin": "round robin",
+    "least_loaded": "least loaded",
+    "prefix_affinity": "prefix affinity",
+    "prefix_affinity_bounded": "prefix affinity (bounded)",
+}
+# Colourblind-safe, distinguishable in greyscale by marker as well as hue.
+POLICY_COLOR = {
+    "round_robin": "#4C72B0",
+    "least_loaded": "#DD8452",
+    "prefix_affinity": "#C44E52",
+    "prefix_affinity_bounded": "#55A868",
+}
+POLICY_MARKER = {
+    "round_robin": "o",
+    "least_loaded": "s",
+    "prefix_affinity": "^",
+    "prefix_affinity_bounded": "D",
+}
+
+
+def med_lo_hi(values: Sequence[float | None]) -> tuple[float, float, float] | None:
+    vals = [v for v in values if v is not None]
+    if not vals:
+        return None
+    a = np.asarray(vals, dtype=float)
+    return float(np.median(a)), float(a.min()), float(a.max())
+
+
+def _series(
+    phases: list[Phase], policy: str, ratio: float, metric
+) -> tuple[list[float], list[float], list[float], list[float], list[int]]:
+    """(rates, medians, lo, hi, n) for one policy at one sharing ratio."""
+    g = group([p for p in phases if p.policy == policy and p.ratio == ratio])
+    rates = sorted({k[2] for k in g})
+    xs, med, lo, hi, ns = [], [], [], [], []
+    for r in rates:
+        reps = g[(policy, ratio, r)]
+        s = med_lo_hi([metric(p) for p in reps])
+        if s is None:
+            continue
+        xs.append(r)
+        med.append(s[0])
+        lo.append(s[1])
+        hi.append(s[2])
+        ns.append(len(reps))
+    return xs, med, lo, hi, ns
+
+
+def _finish(fig: plt.Figure, path: Path, caption: str) -> None:
+    fig.text(0.5, 0.005, caption, ha="center", va="bottom", fontsize=7, wrap=True)
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  wrote {path.relative_to(REPO)}")
+
+
+def fig_ttft_vs_rate(phases: list[Phase], caption: str) -> None:
+    """TTFT p50 and p95 against offered rate, one panel per sharing ratio.
+
+    The headline figure. Prefix affinity is claimed to help TTFT at high sharing
+    and to degrade under load imbalance, so the sharing ratio has to be a panel
+    axis rather than pooled: pooling would average the regime where it helps
+    with the regime where it hurts and report that nothing happens.
+    """
+    ratios = sorted({p.ratio for p in phases})
+    if not ratios:
+        return
+    for stat, label in (("p50", "median"), ("p95", "p95")):
+        fig, axes = plt.subplots(
+            1, len(ratios), figsize=(4.0 * len(ratios), 3.8), sharey=True, squeeze=False
+        )
+        for ax, ratio in zip(axes[0], ratios, strict=True):
+            for pol in POLICY_ORDER:
+                xs, med, lo, hi, ns = _series(phases, pol, ratio, lambda p, s=stat: p.ttft(s))
+                if not xs:
+                    continue
+                ax.plot(
+                    xs, med, marker=POLICY_MARKER[pol], color=POLICY_COLOR[pol],
+                    label=f"{POLICY_LABEL[pol]} (N={min(ns)}-{max(ns)})", lw=1.6, ms=5,
+                )
+                ax.fill_between(xs, lo, hi, color=POLICY_COLOR[pol], alpha=0.16, lw=0)
+            ax.set_title(f"shared-prefix ratio {ratio:g}", fontsize=10)
+            ax.set_xlabel("offered request rate (requests/s)")
+            ax.grid(alpha=0.3, ls=":")
+        axes[0][0].set_ylabel(f"TTFT {label} (s)")
+        axes[0][0].set_yscale("log")
+        axes[0][-1].legend(fontsize=7, framealpha=0.9)
+        fig.suptitle(
+            f"Time to first token ({label}) vs offered load, by routing policy",
+            fontsize=12,
+        )
+        fig.tight_layout(rect=(0, 0.04, 1, 1))
+        _finish(
+            fig,
+            FIGS / f"ttft_{stat}_vs_rate.png",
+            f"Bands show min-max over repetitions. {caption}",
+        )
+
+
+def fig_fairness(phases: list[Phase], caption: str) -> None:
+    """Per-replica load fairness. The load-imbalance failure mode, quantified.
+
+    Two metrics side by side on purpose. Jain's index compresses near 1.0 for
+    mild imbalance and is easy to misread as "fair"; the peak-to-mean ratio
+    keeps resolving and says directly how overloaded the hottest replica is.
+    """
+    ratios = sorted({p.ratio for p in phases})
+    if not ratios:
+        return
+    for metric, name, ylab, ref in (
+        (lambda p: p.jains_index, "jains_index", "Jain's fairness index", 1.0),
+        (lambda p: p.max_over_mean, "max_over_mean", "peak / mean replica load", 1.0),
+    ):
+        fig, axes = plt.subplots(
+            1, len(ratios), figsize=(4.0 * len(ratios), 3.6), sharey=True, squeeze=False
+        )
+        for ax, ratio in zip(axes[0], ratios, strict=True):
+            for pol in POLICY_ORDER:
+                xs, med, lo, hi, ns = _series(phases, pol, ratio, metric)
+                if not xs:
+                    continue
+                ax.plot(
+                    xs, med, marker=POLICY_MARKER[pol], color=POLICY_COLOR[pol],
+                    label=POLICY_LABEL[pol], lw=1.6, ms=5,
+                )
+                ax.fill_between(xs, lo, hi, color=POLICY_COLOR[pol], alpha=0.16, lw=0)
+            ax.axhline(ref, color="k", ls="--", lw=0.8, alpha=0.5)
+            ax.set_title(f"shared-prefix ratio {ratio:g}", fontsize=10)
+            ax.set_xlabel("offered request rate (requests/s)")
+            ax.grid(alpha=0.3, ls=":")
+        axes[0][0].set_ylabel(ylab)
+        axes[0][-1].legend(fontsize=7)
+        fig.suptitle(f"Per-replica load distribution: {ylab}", fontsize=12)
+        fig.tight_layout(rect=(0, 0.04, 1, 1))
+        _finish(
+            fig,
+            FIGS / f"fairness_{name}.png",
+            f"Dashed line is a perfectly even split. Bands are min-max over repetitions. {caption}",
+        )
+
+
+def fig_prefix_cache(phases: list[Phase], caption: str) -> None:
+    """Fleet-wide prefix cache hit rate vs sharing ratio, per policy.
+
+    This is the mechanism figure: if prefix affinity works, its hit rate must
+    exceed round robin's at the same sharing ratio, because that is the only
+    thing it does differently. A TTFT win without a hit-rate win would mean the
+    latency difference came from somewhere else.
+
+    The theoretical bound from P1's generator is drawn on the same axes; without
+    it the measured gap is just a number with nothing to attribute it against.
+    """
+    rates = sorted({p.rate for p in phases})
+    if not rates:
+        return
+    fig, axes = plt.subplots(
+        1, len(rates), figsize=(3.8 * len(rates), 3.6), sharey=True, squeeze=False
+    )
+    for ax, rate in zip(axes[0], rates, strict=True):
+        for pol in POLICY_ORDER:
+            sel = [p for p in phases if p.policy == pol and p.rate == rate]
+            g = group(sel)
+            ratios = sorted({k[1] for k in g})
+            xs, med, lo, hi = [], [], [], []
+            for r in ratios:
+                s = med_lo_hi([p.fleet_prefix_hit_rate for p in g[(pol, r, rate)]])
+                if s is None:
+                    continue
+                xs.append(r)
+                med.append(s[0])
+                lo.append(s[1])
+                hi.append(s[2])
+            if not xs:
+                continue
+            ax.plot(
+                xs, med, marker=POLICY_MARKER[pol], color=POLICY_COLOR[pol],
+                label=POLICY_LABEL[pol], lw=1.6, ms=5,
+            )
+            ax.fill_between(xs, lo, hi, color=POLICY_COLOR[pol], alpha=0.16, lw=0)
+        # Theoretical bound, taken from the artifacts rather than recomputed.
+        bsel = [p for p in phases if p.rate == rate and p.theoretical_bound is not None]
+        if bsel:
+            bg: dict[float, list[float]] = {}
+            for p in bsel:
+                bg.setdefault(p.ratio, []).append(p.theoretical_bound)
+            bx = sorted(bg)
+            ax.plot(
+                bx, [float(np.median(bg[r])) for r in bx],
+                color="k", ls="--", lw=1.0, alpha=0.6, label="theoretical bound",
+            )
+        ax.set_title(f"{rate:g} req/s", fontsize=10)
+        ax.set_xlabel("shared-prefix ratio")
+        ax.grid(alpha=0.3, ls=":")
+    axes[0][0].set_ylabel("fleet prefix cache hit rate")
+    axes[0][-1].legend(fontsize=7)
+    fig.suptitle("Fleet-wide prefix cache hit rate: cache locality is a routing property", fontsize=12)
+    fig.tight_layout(rect=(0, 0.04, 1, 1))
+    _finish(
+        fig,
+        FIGS / "prefix_cache_hit_rate.png",
+        "Hit rate is total hits / total queries summed across replicas (not a mean of "
+        f"per-replica rates, which would misweight an intentionally uneven split). {caption}",
+    )
+
+
+def fig_throughput_error(phases: list[Phase], caption: str) -> None:
+    """Achieved throughput and error rate vs offered rate.
+
+    Reported together because they are the same fact seen two ways: past
+    saturation, achieved throughput flattens and the excess shows up as 429s.
+    A throughput curve alone would look like a clean plateau with no cost.
+    """
+    ratios = sorted({p.ratio for p in phases})
+    if not ratios:
+        return
+    fig, axes = plt.subplots(2, len(ratios), figsize=(4.0 * len(ratios), 6.4), sharex="col", squeeze=False)
+    for col, ratio in enumerate(ratios):
+        for pol in POLICY_ORDER:
+            xs, med, lo, hi, _ = _series(phases, pol, ratio, lambda p: p.throughput_req_s)
+            if xs:
+                axes[0][col].plot(xs, med, marker=POLICY_MARKER[pol], color=POLICY_COLOR[pol],
+                                  label=POLICY_LABEL[pol], lw=1.6, ms=5)
+                axes[0][col].fill_between(xs, lo, hi, color=POLICY_COLOR[pol], alpha=0.16, lw=0)
+            xs, med, lo, hi, _ = _series(phases, pol, ratio, lambda p: p.error_rate)
+            if xs:
+                axes[1][col].plot(xs, med, marker=POLICY_MARKER[pol], color=POLICY_COLOR[pol], lw=1.6, ms=5)
+                axes[1][col].fill_between(xs, lo, hi, color=POLICY_COLOR[pol], alpha=0.16, lw=0)
+        axes[0][col].set_title(f"shared-prefix ratio {ratio:g}", fontsize=10)
+        axes[1][col].set_xlabel("offered request rate (requests/s)")
+        for row in (0, 1):
+            axes[row][col].grid(alpha=0.3, ls=":")
+        # y=x reference: below saturation, achieved should track offered.
+        if xs:
+            lim = [min(xs), max(xs)]
+            axes[0][col].plot(lim, lim, color="k", ls=":", lw=0.8, alpha=0.5)
+    axes[0][0].set_ylabel("achieved throughput (requests/s)")
+    axes[1][0].set_ylabel("error rate (fraction)")
+    axes[0][-1].legend(fontsize=7)
+    fig.suptitle("Achieved throughput and error rate vs offered load", fontsize=12)
+    fig.tight_layout(rect=(0, 0.04, 1, 1))
+    _finish(
+        fig,
+        FIGS / "throughput_and_errors.png",
+        "Dotted diagonal is achieved = offered. Departure from it marks saturation; "
+        f"the error-rate panel shows what the excess became. {caption}",
+    )
+
+
+def fig_spill(phases: list[Phase], caption: str) -> None:
+    """How often the bounded policy's load guard actually fired.
+
+    Without this, a difference between the two affinity policies is an
+    observation; with it, it is an explanation.
+    """
+    sel = [p for p in phases if p.policy == "prefix_affinity_bounded"]
+    if not sel:
+        return
+    ratios = sorted({p.ratio for p in sel})
+    fig, ax = plt.subplots(figsize=(6.4, 4.0))
+    cmap = plt.get_cmap("viridis")
+    for i, ratio in enumerate(ratios):
+        g = group([p for p in sel if p.ratio == ratio])
+        rates = sorted({k[2] for k in g})
+        xs, med, lo, hi = [], [], [], []
+        for r in rates:
+            s = med_lo_hi([p.spill_fraction for p in g[("prefix_affinity_bounded", ratio, r)]])
+            if s is None:
+                continue
+            xs.append(r)
+            med.append(s[0])
+            lo.append(s[1])
+            hi.append(s[2])
+        if not xs:
+            continue
+        c = cmap(i / max(len(ratios) - 1, 1))
+        ax.plot(xs, med, marker="o", color=c, label=f"ratio {ratio:g}", lw=1.6, ms=5)
+        ax.fill_between(xs, lo, hi, color=c, alpha=0.16, lw=0)
+    ax.set_xlabel("offered request rate (requests/s)")
+    ax.set_ylabel("fraction of decisions that spilled off the affinity primary")
+    ax.set_title("prefix_affinity_bounded: how often the load guard fired", fontsize=12)
+    ax.grid(alpha=0.3, ls=":")
+    ax.legend(fontsize=8)
+    fig.tight_layout(rect=(0, 0.05, 1, 1))
+    _finish(
+        fig,
+        FIGS / "bounded_spill_fraction.png",
+        "A spill fraction near 0 means the bounded policy behaved like plain affinity; "
+        f"near 1 means it behaved like least-loaded. {caption}",
+    )
+
+
+def fig_streaming_evidence(phases: list[Phase], caption: str) -> None:
+    """Client-side proof that responses streamed under real load.
+
+    The discriminator is TTFT/e2e. A buffering proxy delivers nothing until
+    generation finishes, so the ratio would sit at ~1.0 for every request
+    regardless of policy or load. This is the under-load half of the
+    non-buffering verification; tests/streaming.rs is the deterministic half.
+    """
+    vals = [(p.rate, p.streaming_ttft_over_e2e, p.chunks_per_request) for p in phases]
+    vals = [(r, t, c) for r, t, c in vals if t is not None]
+    if not vals:
+        return
+    fig, axes = plt.subplots(1, 2, figsize=(10.0, 3.8))
+    rates = sorted({r for r, _, _ in vals})
+    axes[0].boxplot(
+        [[t for r, t, _ in vals if r == rr] for rr in rates],
+        tick_labels=[f"{rr:g}" for rr in rates],
+    )
+    axes[0].axhline(1.0, color="r", ls="--", lw=1.0)
+    axes[0].text(
+        0.02, 0.92, "1.0 = fully buffered", transform=axes[0].transAxes, color="r", fontsize=8
+    )
+    axes[0].set_xlabel("offered request rate (requests/s)")
+    axes[0].set_ylabel("median TTFT / end-to-end latency")
+    axes[0].set_title("Streaming: first token arrives early", fontsize=10)
+    axes[0].grid(alpha=0.3, ls=":")
+
+    cvals = [(r, c) for r, _, c in vals if c is not None]
+    if cvals:
+        axes[1].boxplot(
+            [[c for r, c in cvals if r == rr] for rr in rates],
+            tick_labels=[f"{rr:g}" for rr in rates],
+        )
+        axes[1].set_xlabel("offered request rate (requests/s)")
+        axes[1].set_ylabel("median SSE chunks per request")
+        axes[1].set_title("Streaming: response framing preserved", fontsize=10)
+        axes[1].grid(alpha=0.3, ls=":")
+    fig.suptitle("SSE passthrough is non-buffering under load", fontsize=12)
+    fig.tight_layout(rect=(0, 0.05, 1, 1))
+    _finish(
+        fig,
+        FIGS / "streaming_non_buffering.png",
+        "A buffering proxy would pin the left panel at 1.0 and the right panel near 1 chunk. "
+        f"{caption}",
+    )
+
+
+def write_results_md(phases: list[Phase], inventory: dict[str, Any], caption: str) -> None:
+    """Emit results/RESULTS.md: every table regenerated, none transcribed."""
+    out = [
+        "# Results",
+        "",
+        "Generated by `analysis/make_figures.py` from `results/raw/` only.",
+        "Do not edit by hand: rerun `sbatch slurm/run_analysis.sh`.",
+        "",
+        f"**Hardware / topology:** {caption}",
+        "",
+        "## Inventory",
+        "",
+        "| quantity | value |",
+        "|---|---|",
+    ]
+    for k in (
+        "artifacts_total", "usable", "warmup_excluded",
+        "degraded_excluded", "failed_excluded",
+        "min_repetitions", "max_repetitions",
+    ):
+        if k in inventory:
+            out.append(f"| {k.replace('_', ' ')} | {inventory[k]} |")
+    out += [
+        f"| policies | {', '.join(inventory['policies'])} |",
+        f"| shared-prefix ratios | {', '.join(str(r) for r in inventory['ratios'])} |",
+        f"| offered rates (req/s) | {', '.join(str(r) for r in inventory['rates'])} |",
+        "",
+    ]
+
+    if inventory.get("degraded_detail"):
+        out += [
+            "### Excluded configurations",
+            "",
+            "Recorded in `results/raw/` and excluded from the figures. A failed or "
+            "degraded configuration is data, not a gap.",
+            "",
+            "| phase | problems |",
+            "|---|---|",
+        ]
+        for d in inventory["degraded_detail"][:60]:
+            out.append(f"| `{d['phase']}` | {d['problems']} |")
+        out.append("")
+
+    if not phases:
+        out += ["## Measurements", "", "**Not yet measured.** No usable artifacts present.", ""]
+        (REPO / "results" / "RESULTS.md").write_text("\n".join(out))
+        return
+
+    g = group(phases)
+    out += [
+        "## Per-configuration summary",
+        "",
+        "Median over repetitions, with (min-max) where spread is shown. "
+        "`hit rate` is fleet-wide prefix cache hits/queries. "
+        "`J` is Jain's fairness index over per-replica dispatch counts.",
+        "",
+        "| policy | ratio | rate (req/s) | N | TTFT p50 (s) | TTFT p95 (s) | e2e p50 (s) "
+        "| achieved (req/s) | err | hit rate | J | peak/mean |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+    ]
+
+    def fmt(s: tuple[float, float, float] | None, nd: int = 3) -> str:
+        if s is None:
+            return "not measured"
+        return f"{s[0]:.{nd}f} ({s[1]:.{nd}f}-{s[2]:.{nd}f})"
+
+    for key in sorted(g, key=lambda k: (POLICY_ORDER.index(k[0]) if k[0] in POLICY_ORDER else 99, k[1], k[2])):
+        pol, ratio, rate = key
+        reps = g[key]
+        row = [
+            POLICY_LABEL.get(pol, pol),
+            f"{ratio:g}",
+            f"{rate:g}",
+            str(len(reps)),
+            fmt(med_lo_hi([p.ttft("p50") for p in reps])),
+            fmt(med_lo_hi([p.ttft("p95") for p in reps])),
+            fmt(med_lo_hi([p.e2e("p50") for p in reps]), 2),
+            fmt(med_lo_hi([p.throughput_req_s for p in reps]), 2),
+            fmt(med_lo_hi([p.error_rate for p in reps]), 3),
+            fmt(med_lo_hi([p.fleet_prefix_hit_rate for p in reps]), 3),
+            fmt(med_lo_hi([p.jains_index for p in reps]), 3),
+            fmt(med_lo_hi([p.max_over_mean for p in reps]), 2),
+        ]
+        out.append("| " + " | ".join(row) + " |")
+
+    out += ["", "## Policy comparison against round robin", "",
+            "Ratio of each policy's median TTFT p50 to round robin's at the same "
+            "(ratio, rate). Below 1.0 means faster than the baseline.", "",
+            "| ratio | rate (req/s) | least loaded | prefix affinity | prefix affinity (bounded) |",
+            "|---|---|---|---|---|"]
+    for ratio in sorted({k[1] for k in g}):
+        for rate in sorted({k[2] for k in g if k[1] == ratio}):
+            base = med_lo_hi([p.ttft("p50") for p in g.get(("round_robin", ratio, rate), [])])
+            if base is None or base[0] <= 0:
+                continue
+            cells = []
+            for pol in POLICY_ORDER[1:]:
+                s = med_lo_hi([p.ttft("p50") for p in g.get((pol, ratio, rate), [])])
+                cells.append("not measured" if s is None else f"{s[0] / base[0]:.2f}x")
+            out.append(f"| {ratio:g} | {rate:g} | " + " | ".join(cells) + " |")
+
+    out.append("")
+    (REPO / "results" / "RESULTS.md").write_text("\n".join(out))
+    print(f"  wrote results/RESULTS.md ({len(out)} lines)")
+
+
+def main() -> int:
+    FIGS.mkdir(parents=True, exist_ok=True)
+    phases, inventory = load_measurements()
+    caption = hardware_caption(phases)
+
+    print("Inventory:")
+    print(json.dumps({k: v for k, v in inventory.items() if k != "degraded_detail"}, indent=2))
+
+    if not phases:
+        print("\nNo usable measurements in results/raw/. Nothing to plot.")
+        print("This is the correct outcome before a real run exists; no placeholder")
+        print("figures are generated.")
+        write_results_md(phases, inventory, caption)
+        return 0
+
+    print(f"\nGenerating figures for {len(phases)} usable phases...")
+    fig_ttft_vs_rate(phases, caption)
+    fig_fairness(phases, caption)
+    fig_prefix_cache(phases, caption)
+    fig_throughput_error(phases, caption)
+    fig_spill(phases, caption)
+    fig_streaming_evidence(phases, caption)
+    write_results_md(phases, inventory, caption)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

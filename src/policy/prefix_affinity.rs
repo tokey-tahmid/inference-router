@@ -279,17 +279,32 @@ mod tests {
         let d = p.select(&f, Some(AffinityKey(9))).unwrap();
         assert_eq!(d.replica_index, 1);
 
-        // Now push r1 over too; nothing is under cap and we must land on the
-        // least loaded rather than erroring.
+        // Now level every replica at 30. With factor 1.0 the cap is ceil(mean),
+        // so "every replica at or over cap" requires them to be equal: any
+        // replica below the mean is necessarily below ceil(mean) and would be
+        // spilled to instead. An earlier version of this test loaded 30/30/25
+        // and expected exhaustion, but 25 < ceil(28.33) = 29, so the policy
+        // correctly spilled to r2 and the test was wrong, not the policy.
         for _ in 0..10 {
             guards.push(InflightGuard::acquire(f.get(1).clone()));
         }
-        let d = p.select(&f, Some(AffinityKey(9))).unwrap();
-        assert_eq!(d.reason, RouteReason::AffinitySpillExhausted);
+        for _ in 0..5 {
+            guards.push(InflightGuard::acquire(f.get(2).clone()));
+        }
         assert_eq!(
-            d.replica_index, 1,
-            "least loaded of 30/30/25 after the fills"
+            (f.get(0).load(), f.get(1).load(), f.get(2).load()),
+            (30, 30, 30)
         );
+        let d = p.select(&f, Some(AffinityKey(9))).unwrap();
+        assert_eq!(
+            d.reason,
+            RouteReason::AffinitySpillExhausted,
+            "nothing is under cap, so the bound must fall through to least-loaded"
+        );
+        // Every replica is equally loaded, so which one wins is the rotating
+        // tiebreak's business; the contract under test is that a decision is
+        // still made rather than the request being failed.
+        assert!(d.replica_index < 3);
     }
 
     #[test]
