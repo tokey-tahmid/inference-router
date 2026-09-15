@@ -135,73 +135,97 @@ ir_log "STAGE 1 PASSED"
 
 ############################################################ stage 2: density
 ir_log "=============== STAGE 2: replica density on one 40 GB card ==============="
+# Tear the stage-1 replica down FIRST. It was started at gpu_memory_utilization
+# 0.90, and density probe 5213921 measured it occupying 36,126 MiB of the card's
+# 40 GB. Leaving it up and starting a "second" replica alongside it would not be
+# a two-replicas-per-card test at all: there is no room for a 15.2 GB weight load
+# in the ~4 GB left, so the answer would be a foregone "no" that says nothing
+# about whether the topology is viable.
+#
+# The honest test is two replicas that each ask for HALF the card.
+ir_teardown
+sleep 20
+
 # SEQUENTIAL, unlike the first attempt (job 5213921), which launched both
-# replicas 30 s apart and had one die with "No available memory for the cache
-# blocks". vLLM sizes its KV cache from *currently free* memory at init, so two
-# concurrent starts profile against each other and the loser sees a card that is
-# already full. Waiting for the first to be fully healthy removes that race and
-# separates "they contend while starting" from "a second one genuinely does not
-# fit", which are different findings.
-pkill -f "inference-router" 2>/dev/null || true
-sleep 3
+# replicas 30 s apart against a ~200 s weight load and had one die with
+# "No available memory for the cache blocks". vLLM sizes its KV cache from
+# memory that is free at init, so two concurrent starts profile against each
+# other and the loser sees a card that is already nearly full. Waiting for the
+# first to be fully healthy separates "they contend while starting" from "a
+# second one genuinely does not fit", which are different findings.
 DENSITY_RESULT="not measured"
 DENSITY_DETAIL=""
-for UTIL in 0.45 0.40; do
-    ir_log "--- trying a 2nd replica on GPU0 at gpu_memory_utilization=${UTIL} ---"
-    ir_launch_replica 0 8101 "$MODEL" qwen2.5-7b-instruct "$UTIL" 128 "${OUT}/s2_replica1_u${UTIL}.log" >/dev/null
+for UTIL in 0.45 0.42; do
+    ir_log "--- two replicas on GPU0, gpu_memory_utilization=${UTIL} EACH, launched sequentially ---"
+    ir_teardown; sleep 15
+    ir_launch_replica 0 8100 "$MODEL" qwen2.5-7b-instruct "$UTIL" 128 "${OUT}/s2_a_u${UTIL}.log" >/dev/null
+    if ! ir_wait_healthy 900 8100; then
+        ir_log "  first replica at util=${UTIL} did not come up; that is the finding"
+        grep -iE "ValueError|No available memory|out of memory" "${OUT}/s2_a_u${UTIL}.log" | tail -2 | sed 's/^/    /'
+        DENSITY_RESULT="first_replica_failed_at_util_${UTIL}"
+        continue
+    fi
+    ir_log "  first replica healthy at util=${UTIL}; now starting the second"
+    ir_launch_replica 0 8101 "$MODEL" qwen2.5-7b-instruct "$UTIL" 128 "${OUT}/s2_b_u${UTIL}.log" >/dev/null
     if ir_wait_healthy 900 8101; then
-        ir_log "TWO replicas are live on GPU0 (first at util 0.90, second at ${UTIL})"
-        # A replica that loads but has room for 3 sequences is not a usable
-        # replica, so record the KV cache size, not just that it started.
-        grep -iE "GPU KV cache size|Maximum concurrency|Available KV cache memory" \
-            "${OUT}/s2_replica1_u${UTIL}.log" | sed 's/^/  /'
-        nvidia-smi --query-gpu=index,memory.used --format=csv,noheader | head -1 | sed 's/^/  GPU0 mem: /'
-        DENSITY_RESULT="two_replicas_fit_at_util_${UTIL}_with_first_at_0.90"
-        DENSITY_DETAIL="$(grep -iE 'GPU KV cache size|Maximum concurrency' "${OUT}/s2_replica1_u${UTIL}.log" | tr '\n' ';')"
-        pkill -f "port 8101" 2>/dev/null || true
-        sleep 10
+        ir_log "  TWO replicas are live on one A100-40GB at util=${UTIL} each"
+        # A replica that loads but holds three sequences is not a usable replica,
+        # so record the KV cache size, not merely that the process started.
+        for f in a b; do
+            grep -iE "GPU KV cache size|Maximum concurrency|Available KV cache memory" \
+                "${OUT}/s2_${f}_u${UTIL}.log" | sed "s/^/    ${f}: /"
+        done
+        nvidia-smi --query-gpu=index,memory.used --format=csv,noheader | head -1 | sed 's/^/    GPU0 mem: /'
+        DENSITY_RESULT="two_replicas_fit_at_util_${UTIL}_each"
+        DENSITY_DETAIL="$(grep -ihE 'GPU KV cache size|Maximum concurrency' "${OUT}/s2_a_u${UTIL}.log" "${OUT}/s2_b_u${UTIL}.log" | tr '\n' ';')"
         break
     fi
-    ir_log "second replica at util=${UTIL} did NOT become healthy"
+    ir_log "  second replica at util=${UTIL} did NOT become healthy"
     grep -iE "ValueError|No available memory|out of memory|RuntimeError" \
-        "${OUT}/s2_replica1_u${UTIL}.log" | tail -3 | sed 's/^/  /'
-    DENSITY_RESULT="two_replicas_do_not_fit"
-    DENSITY_DETAIL="$(grep -iE 'No available memory|out of memory' "${OUT}/s2_replica1_u${UTIL}.log" | tail -1)"
-    pkill -f "port 8101" 2>/dev/null || true
-    sleep 10
+        "${OUT}/s2_b_u${UTIL}.log" | tail -3 | sed 's/^/    /'
+    DENSITY_RESULT="two_replicas_do_not_fit_at_util_${UTIL}_each"
+    DENSITY_DETAIL="$(grep -ihE 'No available memory|out of memory' "${OUT}/s2_b_u${UTIL}.log" | tail -1)"
 done
 ir_log "DENSITY FINDING: ${DENSITY_RESULT}"
 
 # Recorded as a raw artifact so the topology decision is traceable, not a log line.
-"$PY" - "$RAW" "$JOB" "$NODE" "$DENSITY_RESULT" "$DENSITY_DETAIL" "$HERE" <<'PYEOF'
+"$PY" - "$RAW" "$JOB" "$NODE" "$DENSITY_RESULT" "$DENSITY_DETAIL" "$HERE" <<'DENSITY_PY'
 import json, sys, subprocess, datetime, pathlib
 raw, job, node, result, detail, repo = sys.argv[1:7]
 def sh(c):
-    try: return subprocess.run(c, cwd=repo, capture_output=True, text=True, timeout=20).stdout.strip() or None
-    except Exception: return None
-sha = sh(["git","rev-parse","HEAD"])
-if sha and sh(["git","status","--porcelain"]): sha += "-dirty"
+    try:
+        return subprocess.run(c, cwd=repo, capture_output=True, text=True, timeout=20).stdout.strip() or None
+    except Exception:
+        return None
+sha = sh(["git", "rev-parse", "HEAD"])
+if sha and sh(["git", "status", "--porcelain"]):
+    sha += "-dirty"
 lock = json.load(open("/home/users/u104240/apps/inference-work/llm-inference-bench/provision.lock.json"))
 img, mdl = lock["images"]["vllm"], lock["models"]["Qwen_Qwen2_5-7B-Instruct"]
 out = {
-  "artifact_schema_version": 1, "kind": "replica_density_probe", "status": "ok",
-  "run_id": f"density-{job}", "slurm_job_id": job, "hostname": node,
-  "utc_timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-  "git_sha": sha, "repetition_index": 1, "warmup": False,
-  "backend_name": "vllm", "backend_version": img["version"],
-  "backend_image_digest": img["digest"],
-  "model_id": mdl["repo"], "model_revision": mdl["revision"],
-  "finding": result, "detail": detail,
-  "full_config_dict": {"method": "sequential launch: first replica fully healthy at "
-                       "gpu_memory_utilization=0.90 before the second is started, so the "
-                       "two do not profile free memory against each other",
-                       "card": "A100-SXM4-40GB", "model_dtype": "bfloat16",
-                       "utils_tried": [0.45, 0.40], "max_model_len": 4096},
+    "artifact_schema_version": 1, "kind": "replica_density_probe", "status": "ok",
+    "run_id": f"density-{job}", "slurm_job_id": job, "hostname": node,
+    "utc_timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "git_sha": sha, "repetition_index": 1, "warmup": False,
+    "backend_name": "vllm", "backend_version": img["version"],
+    "backend_image_digest": img["digest"],
+    "model_id": mdl["repo"], "model_revision": mdl["revision"],
+    "finding": result, "detail": detail,
+    "full_config_dict": {
+        "method": "both replicas on GPU0 at the SAME gpu_memory_utilization, launched "
+                  "sequentially: the first must be fully healthy before the second starts, "
+                  "so the two do not profile free memory against each other",
+        "card": "A100-SXM4-40GB", "model_dtype": "bfloat16",
+        "utils_tried_per_replica": [0.45, 0.42], "max_model_len": 4096,
+        "baseline_single_replica": "job 5213921 arm A: util 0.90 -> 19.09 GiB KV cache, "
+                                   "357,520 tokens, 87.29x max concurrency at 4096 tok/req, "
+                                   "36,126 MiB of 40 GB used",
+    },
 }
 p = pathlib.Path(raw) / f"density_probe_{job}.json"
 p.write_text(json.dumps(out, indent=2, sort_keys=True))
 print(f"  wrote {p}")
-PYEOF
+DENSITY_PY
 
 ############################################################ stage 3: 4 replicas
 ir_log "=============== STAGE 3: 4 replicas, one per GPU ==============="
