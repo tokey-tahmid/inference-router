@@ -330,9 +330,8 @@ async fn dispatch(
         },
     };
 
-    Ok(out
-        .body(Body::from_stream(relay))
-        .map_err(|e| RouterError::Other(anyhow::anyhow!("building response: {e}")))?)
+    out.body(Body::from_stream(relay))
+        .map_err(|e| RouterError::Other(anyhow::anyhow!("building response: {e}")))
 }
 
 fn insert_str(hdrs: &mut HeaderMap, name: &'static str, value: &str) {
