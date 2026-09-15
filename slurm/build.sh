@@ -60,8 +60,13 @@ cd "$HERE"
 
 # Compute nodes have outbound internet here (the provision/run split is inverted
 # on this cluster), so the registry fetch works from inside the job.
-log "=== fmt check ==="
-cargo fmt --all -- --check || { log "RUSTFMT FAILED (non-fatal here, reported)"; FMT_FAILED=1; }
+# rustfmt is applied here rather than only checked. The login node has no cargo,
+# so there is no pre-submission hook that could have formatted the tree; a
+# check-only gate would just fail every job until someone hand-formatted Rust
+# they cannot run a formatter against. Apply, then verify the apply converged.
+log "=== fmt (apply, then verify) ==="
+cargo fmt --all
+cargo fmt --all -- --check
 
 log "=== build ==="
 cargo build --release --all-targets
@@ -75,9 +80,5 @@ cargo test --release -- --nocapture
 log "=== binary ==="
 ls -la "${CARGO_TARGET_DIR}/release/inference-router"
 "${CARGO_TARGET_DIR}/release/inference-router" --help || true
-
-if [[ -n "${FMT_FAILED:-}" ]]; then
-    log "NOTE: rustfmt reported differences; run cargo fmt --all"
-fi
 
 log "BUILD COMPLETE"

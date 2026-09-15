@@ -34,7 +34,9 @@ pub fn app(state: SharedState) -> Router {
         .with_state(state)
 }
 
-async fn metrics_handler(State(state): State<SharedState>) -> ([(&'static str, &'static str); 1], String) {
+async fn metrics_handler(
+    State(state): State<SharedState>,
+) -> ([(&'static str, &'static str); 1], String) {
     (
         [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
         state.metrics.render(&state.fleet, state.policy_kind()),
@@ -79,8 +81,8 @@ async fn set_policy(
     State(state): State<SharedState>,
     Json(req): Json<SetPolicyRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    let kind =
-        PolicyKind::parse(&req.policy).ok_or_else(|| RouterError::UnknownPolicy(req.policy.clone()))?;
+    let kind = PolicyKind::parse(&req.policy)
+        .ok_or_else(|| RouterError::UnknownPolicy(req.policy.clone()))?;
     let current = state.policy_config();
     let next = PolicyConfig {
         kind,

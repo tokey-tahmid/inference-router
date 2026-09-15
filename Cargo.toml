@@ -2,7 +2,18 @@
 name = "inference-router"
 version = "0.1.0"
 edition = "2021"
+# MeluXina's EasyBuild tree carries exactly one Rust: `Rust/1.85.1-GCCcore-14.2.0`
+# (`module -t avail Rust` in job 5211438 lists no other). Several crates in
+# reqwest's transitive `url` -> `idna` -> `icu_*` chain have since raised their
+# MSRV to 1.88, so a default resolve picks versions that cannot compile here.
+#
+# `resolver = "3"` is cargo's MSRV-aware resolver: it treats `rust-version`
+# below as a constraint and selects the newest dependency versions that still
+# support it, instead of the newest that exist. That is far more robust than
+# hand-pinning a dozen `icu_*` crates with `--precise`, which would need
+# redoing every time the chain moves.
 rust-version = "1.85"
+resolver = "3"
 description = "Prefix-aware request router for LLM inference replica fleets"
 license = "MIT"
 
@@ -20,7 +31,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "syn
 tokio-stream = "0.1"
 tower = "0.5"
 hyper = "1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "http1"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
 futures-util = "0.3"
 bytes = "1"
 serde = { version = "1", features = ["derive"] }
@@ -37,7 +48,7 @@ http = "1"
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 axum = { version = "0.7", features = ["http1", "json", "tokio"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "http1"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
 
 [profile.release]
 opt-level = 3

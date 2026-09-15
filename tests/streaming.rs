@@ -36,7 +36,11 @@ async fn first_chunk_arrives_before_the_upstream_finishes() {
     assert!(resp.status().is_success());
 
     let mut stream = resp.bytes_stream();
-    let first = stream.next().await.expect("a first chunk").expect("no error");
+    let first = stream
+        .next()
+        .await
+        .expect("a first chunk")
+        .expect("no error");
     let ttfb = start.elapsed();
     assert!(!first.is_empty());
 
@@ -61,7 +65,10 @@ async fn first_chunk_arrives_before_the_upstream_finishes() {
         total > ttfb * 3,
         "first byte at {ttfb:?} but total {total:?}: the response was buffered"
     );
-    assert!(chunks >= 2, "received {chunks} chunks; framing was collapsed");
+    assert!(
+        chunks >= 2,
+        "received {chunks} chunks; framing was collapsed"
+    );
 }
 
 /// Chunk boundaries survive the proxy. If the router re-framed the body, a

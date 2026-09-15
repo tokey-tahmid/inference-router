@@ -8,7 +8,10 @@ use inference_router::state::AppState;
 use inference_router::{app, health};
 
 #[derive(Debug, Parser)]
-#[command(name = "inference-router", about = "Prefix-aware router for LLM inference replicas")]
+#[command(
+    name = "inference-router",
+    about = "Prefix-aware router for LLM inference replicas"
+)]
 struct Cli {
     /// Path to the TOML config.
     #[arg(short, long, env = "ROUTER_CONFIG")]
@@ -60,8 +63,8 @@ async fn main() -> anyhow::Result<()> {
         config.listen = listen.parse()?;
     }
     if let Some(p) = cli.policy {
-        config.policy.kind = PolicyKind::parse(&p)
-            .ok_or_else(|| anyhow::anyhow!("unknown routing policy {p:?}"))?;
+        config.policy.kind =
+            PolicyKind::parse(&p).ok_or_else(|| anyhow::anyhow!("unknown routing policy {p:?}"))?;
     }
     config.validate()?;
 

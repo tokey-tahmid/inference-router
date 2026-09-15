@@ -77,7 +77,11 @@ const HOP_BY_HOP: [&str; 8] = [
     "upgrade",
 ];
 
-pub async fn chat_completions(state: State<SharedState>, headers: HeaderMap, body: Bytes) -> Response {
+pub async fn chat_completions(
+    state: State<SharedState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     handle(state, headers, body, "/v1/chat/completions").await
 }
 
@@ -102,7 +106,8 @@ async fn handle(
                 }
                 RouterError::AdmissionTimeout { .. } => {
                     m.rejected_overload_total.fetch_add(1, Ordering::Relaxed);
-                    m.admission_queue_timeout_total.fetch_add(1, Ordering::Relaxed);
+                    m.admission_queue_timeout_total
+                        .fetch_add(1, Ordering::Relaxed);
                 }
                 RouterError::NoHealthyReplica => {
                     m.rejected_no_healthy_total.fetch_add(1, Ordering::Relaxed);

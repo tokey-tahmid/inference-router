@@ -161,10 +161,7 @@ async fn complete(State(st): State<MockState>, _body: Bytes) -> Response {
                     "data: {{\"id\":\"{id}\",\"choices\":[{{\"index\":0,\"delta\":{{\"content\":\"t{i}\"}}}}]}}\n\n"
                 )
             };
-            Some((
-                Ok::<Bytes, std::io::Error>(Bytes::from(payload)),
-                i + 1,
-            ))
+            Some((Ok::<Bytes, std::io::Error>(Bytes::from(payload)), i + 1))
         }
     });
 
@@ -208,7 +205,9 @@ pub async fn spawn_router(config: Config) -> (String, SharedState) {
     if state.config.health.enabled {
         inference_router::health::spawn(state.clone());
     }
-    let listener = tokio::net::TcpListener::bind(state.config.listen).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(state.config.listen)
+        .await
+        .unwrap();
     let addr = listener.local_addr().unwrap();
     let app = inference_router::app(state.clone());
     tokio::spawn(async move {
@@ -224,10 +223,14 @@ pub async fn spawn_router(config: Config) -> (String, SharedState) {
 /// Mirrors the shape P1's workload generator emits, which is what the affinity
 /// key is designed around.
 pub fn prompt_with_prefix(shared_group: u64, shared: usize, len: usize) -> Vec<i64> {
-    let mut v: Vec<i64> = (0..shared).map(|i| (shared_group * 100_000 + i as u64) as i64).collect();
+    let mut v: Vec<i64> = (0..shared)
+        .map(|i| (shared_group * 100_000 + i as u64) as i64)
+        .collect();
     let mut x = shared_group.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (len as u64);
     while v.len() < len {
-        x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        x = x
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         v.push((x >> 33) as i64);
     }
     v

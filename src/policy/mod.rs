@@ -200,7 +200,9 @@ mod tests {
                 ..Default::default()
             });
             for k in 0..200u64 {
-                let d = p.select(&fleet, Some(AffinityKey(k))).expect("healthy left");
+                let d = p
+                    .select(&fleet, Some(AffinityKey(k)))
+                    .expect("healthy left");
                 assert!(
                     fleet.get(d.replica_index).is_healthy(),
                     "{kind:?} selected ejected replica {}",

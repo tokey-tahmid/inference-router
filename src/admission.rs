@@ -158,7 +158,12 @@ impl Admission {
 mod tests {
     use super::*;
 
-    fn cfg(behaviour: OverloadBehaviour, per_replica: usize, depth: usize, to_ms: u64) -> AdmissionConfig {
+    fn cfg(
+        behaviour: OverloadBehaviour,
+        per_replica: usize,
+        depth: usize,
+        to_ms: u64,
+    ) -> AdmissionConfig {
         AdmissionConfig {
             overload_behaviour: behaviour,
             max_inflight_per_replica: per_replica,

@@ -234,7 +234,10 @@ mod tests {
             guards.push(InflightGuard::acquire(f.get(target).clone()));
         }
         let d = p.select(&f, Some(hot)).unwrap();
-        assert_ne!(d.replica_index, target, "must have spilled off the hot replica");
+        assert_ne!(
+            d.replica_index, target,
+            "must have spilled off the hot replica"
+        );
         assert_eq!(d.reason, RouteReason::AffinitySpill);
     }
 
@@ -250,7 +253,12 @@ mod tests {
         for _ in 0..3 {
             guards.push(InflightGuard::acquire(f.get(target).clone()));
             let d = p.select(&f, Some(hot)).unwrap();
-            assert_eq!(d.replica_index, target, "spilled too early at load {}", f.get(target).load());
+            assert_eq!(
+                d.replica_index,
+                target,
+                "spilled too early at load {}",
+                f.get(target).load()
+            );
             assert_eq!(d.reason, RouteReason::AffinityPrimary);
         }
     }
@@ -278,7 +286,10 @@ mod tests {
         }
         let d = p.select(&f, Some(AffinityKey(9))).unwrap();
         assert_eq!(d.reason, RouteReason::AffinitySpillExhausted);
-        assert_eq!(d.replica_index, 1, "least loaded of 30/30/25 after the fills");
+        assert_eq!(
+            d.replica_index, 1,
+            "least loaded of 30/30/25 after the fills"
+        );
     }
 
     #[test]
@@ -303,7 +314,10 @@ mod tests {
             .collect();
         for i in 0..N as usize {
             if before[i] != 2 {
-                assert_eq!(before[i], after[i], "key {i} moved but did not own replica 2");
+                assert_eq!(
+                    before[i], after[i],
+                    "key {i} moved but did not own replica 2"
+                );
             } else {
                 assert_ne!(after[i], 2);
             }
@@ -339,7 +353,10 @@ mod tests {
 
     #[test]
     fn kind_reflects_whether_a_bound_is_configured() {
-        assert_eq!(PrefixAffinity::unbounded().kind(), PolicyKind::PrefixAffinity);
+        assert_eq!(
+            PrefixAffinity::unbounded().kind(),
+            PolicyKind::PrefixAffinity
+        );
         assert_eq!(
             PrefixAffinity::bounded(1.25, 4).kind(),
             PolicyKind::PrefixAffinityBounded

@@ -154,7 +154,10 @@ mod tests {
         let idx = vec![0usize, 1, 2, 3];
         let order = rank_by_affinity(AffinityKey(12345), &idx);
         assert_eq!(order.len(), 4);
-        assert_eq!(order.iter().copied().collect::<HashSet<_>>(), idx.into_iter().collect());
+        assert_eq!(
+            order.iter().copied().collect::<HashSet<_>>(),
+            idx.into_iter().collect()
+        );
     }
 
     #[test]
@@ -200,7 +203,10 @@ mod tests {
         let expected = N as f64 / 8.0;
         for (i, c) in counts.iter().enumerate() {
             let dev = (*c as f64 - expected).abs() / expected;
-            assert!(dev < 0.10, "replica {i} took {c} keys, {dev:.3} off uniform");
+            assert!(
+                dev < 0.10,
+                "replica {i} took {c} keys, {dev:.3} off uniform"
+            );
         }
     }
 

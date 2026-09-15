@@ -28,8 +28,8 @@ use crate::replica::Fleet;
 /// The bottom bucket is below the fastest TTFT P1 measured (20.7 ms at 128
 /// input tokens) so the low end is resolved rather than collapsed.
 pub const LATENCY_BUCKETS: [f64; 16] = [
-    0.005, 0.010, 0.025, 0.050, 0.075, 0.100, 0.250, 0.500, 0.750, 1.0, 2.5, 5.0, 10.0, 30.0,
-    60.0, 120.0,
+    0.005, 0.010, 0.025, 0.050, 0.075, 0.100, 0.250, 0.500, 0.750, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0,
+    120.0,
 ];
 
 #[derive(Debug, Default)]
@@ -122,7 +122,10 @@ impl Metrics {
             .iter()
             .position(|x| *x == reason)
             .unwrap_or(0);
-        if let Some(c) = self.route_reason_counts.get(r * self.n_replicas + replica_index) {
+        if let Some(c) = self
+            .route_reason_counts
+            .get(r * self.n_replicas + replica_index)
+        {
             c.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -142,12 +145,7 @@ impl Metrics {
             ($field:ident, $name:literal, $help:literal) => {
                 let _ = writeln!(out, "# HELP {} {}", $name, $help);
                 let _ = writeln!(out, "# TYPE {} counter", $name);
-                let _ = writeln!(
-                    out,
-                    "{} {}",
-                    $name,
-                    self.$field.load(Ordering::Relaxed)
-                );
+                let _ = writeln!(out, "{} {}", $name, self.$field.load(Ordering::Relaxed));
             };
         }
 
@@ -228,20 +226,33 @@ impl Metrics {
             );
         }
 
-        let _ = writeln!(out, "# HELP router_ttft_seconds Time to first response byte, router-observed.");
+        let _ = writeln!(
+            out,
+            "# HELP router_ttft_seconds Time to first response byte, router-observed."
+        );
         let _ = writeln!(out, "# TYPE router_ttft_seconds histogram");
         self.ttft.render(&mut out, "router_ttft_seconds", "");
 
-        let _ = writeln!(out, "# HELP router_e2e_seconds End-to-end request duration, router-observed.");
+        let _ = writeln!(
+            out,
+            "# HELP router_e2e_seconds End-to-end request duration, router-observed."
+        );
         let _ = writeln!(out, "# TYPE router_e2e_seconds histogram");
         self.e2e.render(&mut out, "router_e2e_seconds", "");
 
-        let _ = writeln!(out, "# HELP router_queue_wait_seconds Time spent in the admission queue before dispatch.");
+        let _ = writeln!(
+            out,
+            "# HELP router_queue_wait_seconds Time spent in the admission queue before dispatch."
+        );
         let _ = writeln!(out, "# TYPE router_queue_wait_seconds histogram");
-        self.queue_wait.render(&mut out, "router_queue_wait_seconds", "");
+        self.queue_wait
+            .render(&mut out, "router_queue_wait_seconds", "");
 
         // -- per replica ----------------------------------------------------
-        let _ = writeln!(out, "# HELP router_replica_inflight Requests dispatched and not yet fully streamed back.");
+        let _ = writeln!(
+            out,
+            "# HELP router_replica_inflight Requests dispatched and not yet fully streamed back."
+        );
         let _ = writeln!(out, "# TYPE router_replica_inflight gauge");
         for r in &fleet.replicas {
             let _ = writeln!(
@@ -252,7 +263,10 @@ impl Metrics {
             );
         }
 
-        let _ = writeln!(out, "# HELP router_replica_queued Requests admitted and waiting for a dispatch slot.");
+        let _ = writeln!(
+            out,
+            "# HELP router_replica_queued Requests admitted and waiting for a dispatch slot."
+        );
         let _ = writeln!(out, "# TYPE router_replica_queued gauge");
         for r in &fleet.replicas {
             let _ = writeln!(
@@ -263,7 +277,10 @@ impl Metrics {
             );
         }
 
-        let _ = writeln!(out, "# HELP router_replica_healthy 1 if the replica is in service, 0 if ejected.");
+        let _ = writeln!(
+            out,
+            "# HELP router_replica_healthy 1 if the replica is in service, 0 if ejected."
+        );
         let _ = writeln!(out, "# TYPE router_replica_healthy gauge");
         for r in &fleet.replicas {
             let _ = writeln!(
@@ -287,7 +304,10 @@ impl Metrics {
             );
         }
 
-        let _ = writeln!(out, "# HELP router_replica_upstream_errors_total Dispatches to this replica that failed.");
+        let _ = writeln!(
+            out,
+            "# HELP router_replica_upstream_errors_total Dispatches to this replica that failed."
+        );
         let _ = writeln!(out, "# TYPE router_replica_upstream_errors_total counter");
         for r in &fleet.replicas {
             let _ = writeln!(
@@ -298,7 +318,10 @@ impl Metrics {
             );
         }
 
-        let _ = writeln!(out, "# HELP router_replica_ejections_total Health-check ejections of this replica.");
+        let _ = writeln!(
+            out,
+            "# HELP router_replica_ejections_total Health-check ejections of this replica."
+        );
         let _ = writeln!(out, "# TYPE router_replica_ejections_total counter");
         for r in &fleet.replicas {
             let _ = writeln!(
@@ -309,7 +332,10 @@ impl Metrics {
             );
         }
 
-        let _ = writeln!(out, "# HELP router_replica_recoveries_total Health-check recoveries of this replica.");
+        let _ = writeln!(
+            out,
+            "# HELP router_replica_recoveries_total Health-check recoveries of this replica."
+        );
         let _ = writeln!(out, "# TYPE router_replica_recoveries_total counter");
         for r in &fleet.replicas {
             let _ = writeln!(
@@ -350,7 +376,10 @@ impl Metrics {
             }
         }
 
-        let _ = writeln!(out, "# HELP router_replica_ttft_seconds Router-observed TTFT split by replica.");
+        let _ = writeln!(
+            out,
+            "# HELP router_replica_ttft_seconds Router-observed TTFT split by replica."
+        );
         let _ = writeln!(out, "# TYPE router_replica_ttft_seconds histogram");
         for r in &fleet.replicas {
             if let Some(h) = self.per_replica_ttft.get(r.index) {
@@ -432,11 +461,16 @@ mod tests {
         assert!(text.contains(
             "router_route_decisions_total{replica=\"r2\",reason=\"affinity_primary\"} 1"
         ));
-        assert!(text.contains("router_replica_dispatched_total{replica=\"r0\",placement=\"node0/gpu0\"} 0"));
+        assert!(text.contains(
+            "router_replica_dispatched_total{replica=\"r0\",placement=\"node0/gpu0\"} 0"
+        ));
         assert!(text.contains("router_replica_ttft_seconds_count{replica=\"r2\"} 1"));
 
         // Every non-comment line must be `name value` or `name{labels} value`.
-        for line in text.lines().filter(|l| !l.starts_with('#') && !l.is_empty()) {
+        for line in text
+            .lines()
+            .filter(|l| !l.starts_with('#') && !l.is_empty())
+        {
             let (_, v) = line.rsplit_once(' ').expect("metric line has a value");
             assert!(
                 v.parse::<f64>().is_ok(),
