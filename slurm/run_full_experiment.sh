@@ -71,6 +71,16 @@ ir_log "GPU topology (first rows):"; nvidia-smi topo -m 2>/dev/null | head -7 | 
 ROUTER_BIN="${CARGO_TARGET_DIR}/release/inference-router"
 [[ -x "$ROUTER_BIN" ]] || { ir_log "FATAL: router binary missing at ${ROUTER_BIN}"; exit 1; }
 
+# Syntax gate, first thing. The login node's Python is 3.6 and cannot even parse
+# this code, so a batch job is the first opportunity to find a typo. Without this
+# the first syntax error would surface in stage 1, after a ~200 s replica cold
+# start; here it costs seconds. (P1 learned the same lesson and opens its probe
+# the same way.)
+ir_log "=== python syntax gate ==="
+"$PY" -m compileall -q "${HERE}/driver" || { ir_log "FATAL: driver does not compile"; exit 1; }
+"$PY" -c "import ir_driver.cli, ir_driver.experiment, ir_driver.loadgen, ir_driver.pick_rates, ir_driver.stats, ir_driver.metrics_scrape, ir_driver.provenance; import llm_inference_bench.workload as w; print('  imports OK, P1 workload generator:', w.__file__)" \
+    || { ir_log "FATAL: driver imports failed"; exit 1; }
+
 REV="$("$PY" -c "import json;print(json.load(open('${IR_LOCKFILE}'))['models']['Qwen_Qwen2_5-7B-Instruct']['revision'])")"
 MODEL="$(ir_model_path "Qwen--Qwen2.5-7B-Instruct" "$REV")" || exit 1
 ir_log "model=${MODEL}"

@@ -132,7 +132,7 @@ async def _set_policy(client: httpx.AsyncClient, router_url: str, spec: PhaseSpe
     return got
 
 
-def build_workload(spec: PhaseSpec, tokenizer: Any) -> list[Any]:
+def build_workload(spec: PhaseSpec, tokenizer: Any) -> tuple[list[Any], Any]:
     """Build the request set using P1's generator, imported not copied."""
     from llm_inference_bench.workload import (  # noqa: PLC0415
         LengthSpec,
