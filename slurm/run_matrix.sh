@@ -5,6 +5,11 @@
 #   sbatch slurm/run_matrix.sh                       # full matrix
 #   sbatch slurm/run_matrix.sh --rates 4 10 18 28    # override the rate ladder
 #
+# All arguments pass through to `ir_driver.cli matrix`, so the workload can be
+# changed too, e.g. the many-prefix ("tenant mix") variant:
+#   sbatch --time=03:30:00 slurm/run_matrix.sh --rates 8 32 48 \
+#       --ratios 0.6 0.9 --num-requests 960 --num-prefix-groups 216
+#
 # The single-fleet design is the central experimental choice here. Each vLLM
 # replica takes minutes to stream 15 GB of weights off Lustre, so relaunching
 # per policy would cost more node-hours than the measurement and, far worse,
@@ -120,10 +125,19 @@ curl -s http://127.0.0.1:8080/admin/fleet | python3 -m json.tool | sed 's/^/  /'
 # Stop cleanly with time to spare rather than being SIGKILLed mid-write: a
 # truncated artifact is worse than a missing one. 25 minutes of slack covers
 # fleet teardown and the final artifact flush.
-END_EPOCH=$(date -d "+$(squeue -j "${SLURM_JOB_ID}" -h -o %L)" +%s 2>/dev/null || echo 0)
-NOW=$(date +%s)
-BUDGET=$(( END_EPOCH > NOW ? END_EPOCH - NOW - 1500 : 17000 ))
-(( BUDGET < 600 )) && BUDGET=600
+# End time as an ISO timestamp (squeue %e). The earlier form fed squeue's %L
+# ("5:59:30") to `date -d "+..."`, which cannot parse it, and a fallback hid
+# that; see docs/notes.md, 2026-09-16.
+END_ISO="$(squeue -j "${SLURM_JOB_ID}" -h -o %e 2>/dev/null | tr -d '[:space:]')"
+if ! END_EPOCH=$(date -d "${END_ISO}" +%s 2>/dev/null) || [[ -z "${END_ISO}" ]]; then
+    ir_log "FATAL: cannot determine job end time (squeue %e returned '${END_ISO}')"
+    exit 1
+fi
+BUDGET=$(( END_EPOCH - $(date +%s) - 1500 ))
+if (( BUDGET < 600 )); then
+    ir_log "FATAL: driver budget would be ${BUDGET}s; not enough for a matrix"
+    exit 1
+fi
 ir_log "driver budget: ${BUDGET}s"
 
 RATE_ARGS=()
