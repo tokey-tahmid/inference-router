@@ -1,0 +1,30 @@
+{
+  "artifact_schema_version": 1,
+  "backend_image_digest": "sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967",
+  "backend_name": "vllm",
+  "backend_version": "0.27.1",
+  "detail": "(EngineCore pid=32229) INFO 09-16 12:14:50 [kv_cache_utils.py:2235] GPU KV cache size: 24,608 tokens;(EngineCore pid=32229) INFO 09-16 12:14:50 [kv_cache_utils.py:2236] Maximum concurrency for 4,096 tokens per request: 6.01x;(EngineCore pid=702) INFO 09-16 12:17:33 [kv_cache_utils.py:2235] GPU KV cache size: 24,608 tokens;(EngineCore pid=702) INFO 09-16 12:17:33 [kv_cache_utils.py:2236] Maximum concurrency for 4,096 tokens per request: 6.01x;",
+  "finding": "two_replicas_fit_at_util_0.45_each",
+  "full_config_dict": {
+    "baseline_single_replica": "job 5213921 arm A: util 0.90 -> 19.09 GiB KV cache, 357,520 tokens, 87.29x max concurrency at 4096 tok/req, 36,126 MiB of 40 GB used",
+    "card": "A100-SXM4-40GB",
+    "max_model_len": 4096,
+    "method": "both replicas on GPU0 at the SAME gpu_memory_utilization, launched sequentially: the first must be fully healthy before the second starts, so the two do not profile free memory against each other",
+    "model_dtype": "bfloat16",
+    "utils_tried_per_replica": [
+      0.45,
+      0.42
+    ]
+  },
+  "git_sha": "c921ce89f398b320919bef280dfb969e353ca73b-dirty",
+  "hostname": "mel2061",
+  "kind": "replica_density_probe",
+  "model_id": "Qwen/Qwen2.5-7B-Instruct",
+  "model_revision": "a09a35458c702b33eeacc393d103063234e8bc28",
+  "repetition_index": 1,
+  "run_id": "density-5215612",
+  "slurm_job_id": "5215612",
+  "status": "ok",
+  "utc_timestamp": "2026-09-16T10:17:49Z",
+  "warmup": false
+}
