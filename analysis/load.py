@@ -180,6 +180,10 @@ class Phase:
         ev = self.summary.get("streaming_evidence", {})
         return ev.get("chunks_per_request", {}).get("p50")
 
+    @property
+    def num_prefix_groups(self) -> int:
+        return int(self.raw["full_config_dict"]["phase"].get("num_prefix_groups", 1))
+
     def key(self) -> tuple[str, float, float]:
         return (self.policy, self.ratio, self.rate)
 
@@ -240,18 +244,26 @@ def load_failure_trials(raw_dir: Path = RAW) -> tuple[list[dict[str, Any]], dict
                  "superseded_jobs": [j for j in jobs if j != chosen]}
 
 
-def load_measurements(raw_dir: Path = RAW) -> tuple[list[Phase], dict[str, Any]]:
+def prefix_group_counts(raw_dir: Path = RAW) -> list[int]:
+    """Distinct workload shapes present. Each is analysed as its own experiment."""
+    return sorted({p.num_prefix_groups for p in iter_artifacts(raw_dir)})
+
+
+def load_measurements(
+    raw_dir: Path = RAW, num_prefix_groups: int = 1
+) -> tuple[list[Phase], dict[str, Any]]:
     """Return (usable phases, inventory).
 
     The inventory is printed alongside every figure run so the exclusions are
     visible rather than implicit.
     """
-    allruns = list(iter_artifacts(raw_dir))
+    allruns = [p for p in iter_artifacts(raw_dir) if p.num_prefix_groups == num_prefix_groups]
     first_seen: dict[str, str] = {}
     for p in allruns:
         ts = str(p.raw.get("utc_timestamp", ""))
         first_seen[p.run_id] = min(first_seen.get(p.run_id, ts), ts)
-    chosen = os.environ.get("IR_RUN_ID") or (
+    pinned = os.environ.get("IR_RUN_ID")
+    chosen = pinned if pinned in first_seen else (
         max(first_seen, key=lambda k: first_seen[k]) if first_seen else None
     )
     every = [p for p in allruns if p.run_id == chosen]
@@ -261,6 +273,7 @@ def load_measurements(raw_dir: Path = RAW) -> tuple[list[Phase], dict[str, Any]]
 
     usable = [p for p in every if not p.warmup and server_ok(p)]
     inventory = {
+        "num_prefix_groups": num_prefix_groups,
         "run_id": chosen,
         "slurm_job_id": every[0].raw.get("slurm_job_id") if every else None,
         "superseded_runs": {
