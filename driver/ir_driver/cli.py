@@ -423,7 +423,7 @@ async def cmd_failure(args: argparse.Namespace) -> int:
             await asyncio.sleep(0.2)
         await asyncio.sleep(args.restart_after_s)
         await run_cmd(args.restart_command, restart_event, "restart")
-        log.warning("replica_restart_launched", replica=args.kill, event=restart_event)
+        log.warning("replica_restart_launched", replica=args.kill, detail=restart_event)
 
     async def killer() -> None:
         await asyncio.sleep(args.kill_after_s)
@@ -440,7 +440,7 @@ async def cmd_failure(args: argparse.Namespace) -> int:
         kill_event["kill_completed_unix"] = time.time()
         kill_event["kill_returncode"] = proc.returncode
         kill_event["kill_output"] = (out or b"").decode("utf-8", "replace")[:2000]
-        log.warning("replica_killed", replica=args.kill, event=kill_event)
+        log.warning("replica_killed", replica=args.kill, detail=kill_event)
 
     async def load() -> Any:
         try:
