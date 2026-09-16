@@ -481,8 +481,12 @@ def failure_md(trials: list[dict[str, Any]], finv: dict[str, Any]) -> list[str]:
         f"{fc['phase']['shared_prefix_ratio']:g}, then relaunched "
         f"{t0.get('recovery', {}).get('restart_after_kill_s')} s after the kill completed. "
         f"Health check every {t0['detection']['health_interval_ms']} ms, ejection after "
-        f"{t0['detection']['unhealthy_threshold']} failures, so detection cannot be faster than "
-        f"about {t0['detection']['expected_lower_bound_s']:g} s. Each trial starts a fresh fleet.",
+        f"{t0['detection']['unhealthy_threshold']} consecutive failures. The first failing check "
+        f"can land just after the kill, so detection is bounded below by about "
+        f"{(t0['detection']['unhealthy_threshold'] - 1) * t0['detection']['health_interval_ms'] / 1000:g} s "
+        f"(the artifacts' `expected_lower_bound_s` of "
+        f"{t0['detection']['expected_lower_bound_s']:g} s overstates it by one interval). "
+        "Each trial starts a fresh fleet.",
         "",
         "`readmission` is from the relaunch command to the router readmitting the replica "
         "(dominated by vLLM cold start). `share back` is the killed replica's share of requests "
