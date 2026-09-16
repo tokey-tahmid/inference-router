@@ -103,13 +103,21 @@ def fig_ttft_vs_rate(phases: list[Phase], caption: str) -> None:
     ratios = sorted({p.ratio for p in phases})
     if not ratios:
         return
-    for stat, label in (("p50", "median"), ("p95", "p95")):
+    variants = (
+        ("p50", "median", "", lambda p, s: p.ttft(s), "from scheduled arrival"),
+        ("p95", "p95", "", lambda p, s: p.ttft(s), "from scheduled arrival"),
+        ("p50", "median", "_dispatch", lambda p, s: p.ttft_from_dispatch(s), "from actual dispatch"),
+        ("p95", "p95", "_dispatch", lambda p, s: p.ttft_from_dispatch(s), "from actual dispatch"),
+    )
+    for stat, label, suffix, getter, clock in variants:
         fig, axes = plt.subplots(
             1, len(ratios), figsize=(4.0 * len(ratios), 3.8), sharey=True, squeeze=False
         )
         for ax, ratio in zip(axes[0], ratios, strict=True):
             for pol in POLICY_ORDER:
-                xs, med, lo, hi, ns = _series(phases, pol, ratio, lambda p, s=stat: p.ttft(s))
+                xs, med, lo, hi, ns = _series(
+                    phases, pol, ratio, lambda p, s=stat, g=getter: g(p, s)
+                )
                 if not xs:
                     continue
                 ax.plot(
@@ -120,18 +128,20 @@ def fig_ttft_vs_rate(phases: list[Phase], caption: str) -> None:
             ax.set_title(f"shared-prefix ratio {ratio:g}", fontsize=10)
             ax.set_xlabel("offered request rate (requests/s)")
             ax.grid(alpha=0.3, ls=":")
-        axes[0][0].set_ylabel(f"TTFT {label} (s)")
+        axes[0][0].set_ylabel(f"TTFT {label} (s), {clock}")
         axes[0][0].set_yscale("log")
         axes[0][-1].legend(fontsize=7, framealpha=0.9)
         fig.suptitle(
-            f"Time to first token ({label}) vs offered load, by routing policy",
+            f"Time to first token ({label}, {clock}) vs offered load, by routing policy",
             fontsize=12,
         )
         fig.tight_layout(rect=(0, 0.04, 1, 1))
         _finish(
             fig,
-            FIGS / f"ttft_{stat}_vs_rate.png",
-            f"Bands show min-max over repetitions. {caption}",
+            FIGS / f"ttft_{stat}{suffix}_vs_rate.png",
+            "Bands show min-max over repetitions. Scheduled-arrival TTFT includes client "
+            "dispatch lag (open-loop convention); dispatch TTFT removes it. "
+            f"{caption}",
         )
 
 
@@ -390,8 +400,9 @@ def write_results_md(phases: list[Phase], inventory: dict[str, Any], caption: st
         "|---|---|",
     ]
     for k in (
+        "run_id", "slurm_job_id",
         "artifacts_total", "usable", "warmup_excluded",
-        "degraded_excluded", "failed_excluded",
+        "server_problem_excluded", "client_lag_flagged_kept",
         "min_repetitions", "max_repetitions",
     ):
         if k in inventory:
@@ -402,6 +413,17 @@ def write_results_md(phases: list[Phase], inventory: dict[str, Any], caption: st
         f"| offered rates (req/s) | {', '.join(str(r) for r in inventory['rates'])} |",
         "",
     ]
+
+    if inventory.get("superseded_runs"):
+        out += [
+            "### Superseded runs (in results/raw/, not used here)",
+            "",
+            "| run_id | Slurm job | artifacts |",
+            "|---|---|---|",
+        ]
+        for rid, d in inventory["superseded_runs"].items():
+            out.append(f"| `{rid}` | {d['slurm_job_id']} | {d['artifacts']} |")
+        out.append("")
 
     if inventory.get("degraded_detail"):
         out += [
@@ -428,11 +450,16 @@ def write_results_md(phases: list[Phase], inventory: dict[str, Any], caption: st
         "",
         "Median over repetitions, with (min-max) where spread is shown. "
         "`hit rate` is fleet-wide prefix cache hits/queries. "
-        "`J` is Jain's fairness index over per-replica dispatch counts.",
+        "`J` is Jain's fairness index over per-replica dispatch counts. "
+        "TTFT is from scheduled arrival (open loop); `disp.` columns are from actual "
+        "dispatch, and `lag p95` is the client's own dispatch lag. `lagged` counts "
+        "repetitions flagged for client lag (kept, see load.py). Past saturation, "
+        "latency describes admitted requests only; read it with `err`.",
         "",
-        "| policy | ratio | rate (req/s) | N | TTFT p50 (s) | TTFT p95 (s) | e2e p50 (s) "
+        "| policy | ratio | rate (req/s) | N | lagged | TTFT p50 (s) | TTFT p95 (s) "
+        "| disp. TTFT p50 (s) | disp. TTFT p95 (s) | lag p95 (s) | e2e p50 (s) "
         "| achieved (req/s) | err | hit rate | J | peak/mean |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
 
     def fmt(s: tuple[float, float, float] | None, nd: int = 3) -> str:
@@ -448,8 +475,12 @@ def write_results_md(phases: list[Phase], inventory: dict[str, Any], caption: st
             f"{ratio:g}",
             f"{rate:g}",
             str(len(reps)),
+            str(sum(1 for p in reps if p.client_lagged)),
             fmt(med_lo_hi([p.ttft("p50") for p in reps])),
             fmt(med_lo_hi([p.ttft("p95") for p in reps])),
+            fmt(med_lo_hi([p.ttft_from_dispatch("p50") for p in reps])),
+            fmt(med_lo_hi([p.ttft_from_dispatch("p95") for p in reps])),
+            fmt(med_lo_hi([p.send_delay("p95") for p in reps])),
             fmt(med_lo_hi([p.e2e("p50") for p in reps]), 2),
             fmt(med_lo_hi([p.throughput_req_s for p in reps]), 2),
             fmt(med_lo_hi([p.error_rate for p in reps]), 3),
@@ -475,6 +506,35 @@ def write_results_md(phases: list[Phase], inventory: dict[str, Any], caption: st
                 cells.append("not measured" if s is None else f"{s[0] / base[0]:.2f}x")
             out.append(f"| {ratio:g} | {rate:g} | " + " | ".join(cells) + " |")
 
+    out += ["", "## Per-replica load and cache hit rate", "",
+            "Median over repetitions of each replica's share of dispatched requests "
+            "and its own prefix cache hit rate. This is where a hot prefix pinned to "
+            "one replica shows up directly.", "",
+            "| policy | ratio | rate (req/s) | dispatch share r0 / r1 / r2 / r3 "
+            "| hit rate r0 / r1 / r2 / r3 |",
+            "|---|---|---|---|---|"]
+    for key in sorted(g, key=lambda k: (POLICY_ORDER.index(k[0]) if k[0] in POLICY_ORDER else 99, k[1], k[2])):
+        pol, ratio, rate = key
+        reps = g[key]
+        rids = sorted({r for p in reps for r in p.summary.get("per_replica_dispatch_counts", {})})
+        shares, hits = [], []
+        for rid in rids:
+            sh = []
+            for p in reps:
+                c = p.summary.get("per_replica_dispatch_counts", {})
+                tot = sum(c.values())
+                if tot:
+                    sh.append(c.get(rid, 0) / tot)
+            m = med_lo_hi(sh)
+            shares.append("n/m" if m is None else f"{m[0]:.2f}")
+            m = med_lo_hi([p.per_replica_hit_rates.get(rid) for p in reps])
+            hits.append("n/m" if m is None else f"{m[0]:.2f}")
+        out.append(
+            f"| {POLICY_LABEL.get(pol, pol)} | {ratio:g} | {rate:g} | "
+            + " / ".join(shares) + " | " + " / ".join(hits) + " |"
+        )
+    out.append("")
+    out.append("`n/m` = not measured for that replica in these repetitions.")
     out.append("")
     (REPO / "results" / "RESULTS.md").write_text("\n".join(out))
     print(f"  wrote results/RESULTS.md ({len(out)} lines)")

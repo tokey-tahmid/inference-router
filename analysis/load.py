@@ -4,20 +4,32 @@ Reads `results/raw/` only, never writes there. Every figure and table is
 regenerated from this module rather than transcribed, so a number in the README
 can always be traced back to the artifact it came from.
 
-Two exclusions are applied here, once, so every downstream consumer gets them:
+Selection and exclusions are applied here, once, so every downstream consumer
+gets them:
 
+* **One matrix run.** Only the most recent matrix run (by `run_id`) is used,
+  or the one named by `IR_RUN_ID`. Runs from different jobs used different
+  nodes and rate ladders; pooling their repetitions would mix fleets. Earlier
+  runs are listed in the inventory as superseded, not dropped silently.
 * `warmup=true` phases. The first run of any configuration pays CUDA graph
   capture, allocator growth and cache population. Recorded, excluded, never
   silently dropped.
-* `status != "ok"` phases. A phase whose prefix-cache reset failed, or whose
-  load generator fell behind its own schedule, is not the configuration it
-  claims to be. It stays in `results/raw/` and is reported in the inventory as
-  a failed or degraded configuration, because a failed config is data.
+* Phases with a **server-side** problem (prefix-cache reset failed, fleet not
+  drained, no successful request) are not the configuration they claim to be
+  and are excluded.
+* Phases whose only problem is `load_generator_fell_behind_schedule` are
+  **kept and flagged**. In job 5216059 the client missed its 0.25 s dispatch
+  tolerance on more than 2% of requests even at 4 req/s, so excluding them
+  would leave most configurations below N=3. The lag is a client artefact and
+  is handled in the metric instead: TTFT is reported both from scheduled
+  arrival (open-loop, includes client lag) and from actual dispatch (client
+  lag removed), and the dispatch-lag p95 is reported next to them.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
@@ -63,6 +75,32 @@ class Phase:
 
     def ttft(self, p: str) -> float | None:
         return self.summary.get("ttft_s", {}).get(p)
+
+    def ttft_from_dispatch(self, p: str) -> float | None:
+        """TTFT measured from when the request was actually sent.
+
+        Computed from the per-request records stored in the artifact, not
+        estimated. Removes client dispatch lag; a stall on the receive side
+        would still be included, so this is a lower bound on the client's
+        contribution, not a pure server number.
+        """
+        vals = sorted(
+            r["first_token_at"] - r["sent_at"]
+            for r in self.raw.get("per_request", [])
+            if r.get("ok") and r.get("first_token_at") is not None and r.get("sent_at") is not None
+        )
+        return _pct(vals, p)
+
+    def send_delay(self, p: str) -> float | None:
+        return self.summary.get("send_delay_s", {}).get(p)
+
+    @property
+    def client_lagged(self) -> bool:
+        return "load_generator_fell_behind_schedule" in (self.raw.get("problems") or [])
+
+    @property
+    def run_id(self) -> str:
+        return str(self.raw.get("run_id"))
 
     def e2e(self, p: str) -> float | None:
         return self.summary.get("e2e_s", {}).get(p)
@@ -146,6 +184,18 @@ class Phase:
         return (self.policy, self.ratio, self.rate)
 
 
+def _pct(sorted_vals: list[float], p: str) -> float | None:
+    """Nearest-rank percentile on pre-sorted values; `p` like "p50"."""
+    if not sorted_vals:
+        return None
+    q = float(p.lstrip("p")) / 100.0
+    k = max(0, min(len(sorted_vals) - 1, int(round(q * (len(sorted_vals) - 1)))))
+    return sorted_vals[k]
+
+
+CLIENT_ONLY_PROBLEMS = {"load_generator_fell_behind_schedule"}
+
+
 def iter_artifacts(raw_dir: Path = RAW) -> Iterator[Phase]:
     for p in sorted(raw_dir.glob("*.json")):
         try:
@@ -166,13 +216,37 @@ def load_measurements(raw_dir: Path = RAW) -> tuple[list[Phase], dict[str, Any]]
     The inventory is printed alongside every figure run so the exclusions are
     visible rather than implicit.
     """
-    every = list(iter_artifacts(raw_dir))
-    usable = [p for p in every if not p.warmup and p.status == "ok"]
+    allruns = list(iter_artifacts(raw_dir))
+    first_seen: dict[str, str] = {}
+    for p in allruns:
+        ts = str(p.raw.get("utc_timestamp", ""))
+        first_seen[p.run_id] = min(first_seen.get(p.run_id, ts), ts)
+    chosen = os.environ.get("IR_RUN_ID") or (
+        max(first_seen, key=lambda k: first_seen[k]) if first_seen else None
+    )
+    every = [p for p in allruns if p.run_id == chosen]
+
+    def server_ok(p: Phase) -> bool:
+        return set(p.raw.get("problems") or []) <= CLIENT_ONLY_PROBLEMS
+
+    usable = [p for p in every if not p.warmup and server_ok(p)]
     inventory = {
+        "run_id": chosen,
+        "slurm_job_id": every[0].raw.get("slurm_job_id") if every else None,
+        "superseded_runs": {
+            rid: {
+                "artifacts": sum(1 for p in allruns if p.run_id == rid),
+                "slurm_job_id": next(
+                    (p.raw.get("slurm_job_id") for p in allruns if p.run_id == rid), None
+                ),
+            }
+            for rid in sorted(first_seen)
+            if rid != chosen
+        },
         "artifacts_total": len(every),
         "warmup_excluded": sum(1 for p in every if p.warmup),
-        "degraded_excluded": sum(1 for p in every if not p.warmup and p.status == "degraded"),
-        "failed_excluded": sum(1 for p in every if not p.warmup and p.status == "failed"),
+        "server_problem_excluded": sum(1 for p in every if not p.warmup and not server_ok(p)),
+        "client_lag_flagged_kept": sum(1 for p in usable if p.client_lagged),
         "usable": len(usable),
         "policies": sorted({p.policy for p in usable}),
         "ratios": sorted({p.ratio for p in usable}),
@@ -181,7 +255,7 @@ def load_measurements(raw_dir: Path = RAW) -> tuple[list[Phase], dict[str, Any]]
         "degraded_detail": [
             {"phase": p.raw.get("phase_id"), "problems": p.raw.get("problems")}
             for p in every
-            if not p.warmup and p.status != "ok"
+            if not p.warmup and not server_ok(p)
         ],
     }
     counts: dict[str, int] = {}
