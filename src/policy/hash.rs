@@ -58,7 +58,11 @@ impl AffinityKey {
             .nth(n)
             .map(|(i, _)| i)
             .unwrap_or(text.len());
-        Self(fnv1a64(text[..end].as_bytes()))
+        // `end` comes from `char_indices`, so it is always a char boundary and
+        // the str slice could not panic. Slicing the bytes is equivalent and
+        // skips the redundant boundary check (clippy::sliced_string_as_bytes,
+        // a lint introduced after the 1.85 toolchain this was first built on).
+        Self(fnv1a64(&text.as_bytes()[..end]))
     }
 }
 
