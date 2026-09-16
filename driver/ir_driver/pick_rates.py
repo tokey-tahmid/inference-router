@@ -121,8 +121,8 @@ def pick(
     if knee is None:
         # Never driven into overload. Say so; do not invent a higher rate than
         # was measured, and do not label the top of the ladder "overload".
-        lo, hi = offered[0], offered[-1]
-        rates = _spread(lo, hi, n)
+        hi = offered[-1]
+        rates = _spread(offered, n)
         return {
             "rates": rates,
             "knee": None,
@@ -161,6 +161,18 @@ def pick(
                   + (f"; client fell behind at {client_lagged}, excluded" if client_lagged else ""),
         "table": rows,
     }
+
+
+def _spread(offered: list[float], n: int) -> list[float]:
+    """Pick up to n rates evenly by index from the MEASURED ladder, extremes kept.
+
+    Only calibrated rates are returned, never interpolated ones: a rate the
+    fleet was not calibrated at has no evidence behind its load label.
+    """
+    if len(offered) <= n:
+        return list(offered)
+    idx = sorted({round(i * (len(offered) - 1) / (n - 1)) for i in range(n)})
+    return [offered[i] for i in idx]
 
 
 def format_table(rows: list[dict[str, Any]]) -> str:
