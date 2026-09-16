@@ -55,11 +55,16 @@ def git_sha(repo: Path) -> str | None:
     The suffix is not cosmetic: an artifact produced from a dirty tree cannot be
     bit-reproduced from a clean checkout, and saying so is the difference
     between exact provenance and approximate provenance.
+
+    Untracked files are ignored. The experiment writes its own artifacts into
+    the repo, so counting them marked every phase after the first as dirty
+    with no code change at all (job 5216059: stage-1 artifact clean, matrix
+    artifacts "-dirty", same HEAD, only untracked results/ present).
     """
     sha = _run(["git", "rev-parse", "HEAD"], cwd=repo)
     if sha is None:
         return None
-    status = _run(["git", "status", "--porcelain"], cwd=repo)
+    status = _run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=repo)
     return f"{sha}-dirty" if status else sha
 
 

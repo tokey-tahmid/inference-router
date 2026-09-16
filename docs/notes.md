@@ -220,13 +220,72 @@ calibrate, matrix). Two things pushed it into one:
 
 So `run_full_experiment.sh` measures the knee in stage 4 and feeds it to stage 5
 in the same allocation, on the same node, minutes apart. `pick_rates.py` locates
-the knee from two independent signals (achieved throughput falling below 90% of
-offered, and the error rate rising above 1%) and **reports when no rate
-saturated** rather than labelling the top of the ladder "overload" on faith.
+the knee from server behaviour (median TTFT above 3x its low-rate baseline, or
+error rate above 1%) and **reports when no rate saturated** rather than
+labelling the top of the ladder "overload" on faith. The first version of that
+criterion was wrong; see the next section.
 
 Stage 1 is a hard gate: if SSE streaming is not verified non-buffering against a
 live replica, the job exits before spending node-hours on a matrix whose
 headline metric would be meaningless.
+
+---
+
+## 2026-09-16: the first knee was a measurement artefact, and so was the first "-dirty"
+
+**False knee.** Job 5215612 calibrated at 2..32 req/s and put the knee at
+4 req/s, from "achieved throughput < 0.9 x offered". Achieved was computed as
+completions over total elapsed time, drain tail included, so on short phases it
+falls with offered rate whether or not anything saturates. The same artifacts
+show median TTFT flat at 0.07-0.10 s and zero errors across the whole ladder:
+the fleet was never loaded. The matrix it would have fed compared four routing
+policies on an idle fleet. Two more problems in the same job: the job end time
+came from `date -d "+5:59:30"`, which `date` cannot parse, and an `|| echo 0`
+fallback turned that into a silent 600 s budget floor, so only 8 phases ran.
+
+Fixes: the knee is now median TTFT against the lowest-rate baseline, plus
+error rate. Median, because TTFT is measured from scheduled arrival (the
+correct open-loop method) and a client stall therefore lands in TTFT directly,
+but only for the few requests it hits: p95 was *highest at the lowest rates*
+in 5215612. Achieved rate is now measured over the dispatch window only, and a
+rate the generator could not offer is reported and excluded, never promoted to
+a knee. The ladder was widened and phase length now scales with rate so a
+backlog has time to form.
+
+Job 5216059 calibration (artifacts in `results/calibration/5216059/`):
+
+| offered | achieved | TTFT p50 (s) | TTFT p95 (s) | error rate |
+|---|---|---|---|---|
+| 4 | 3.78 | 0.071 | 0.417 | 0.000 |
+| 8 | 8.18 | 0.068 | 0.178 | 0.000 |
+| 16 | 16.01 | 0.092 | 0.739 | 0.000 |
+| 32 | 31.33 | 0.099 | 2.623 | 0.000 |
+| 48 | 47.44 | 0.340 | 9.912 | 0.190 |
+| 64 | 61.43 | 0.195 | 16.057 | 0.242 |
+| 96 | 75.01 | 23.410 | 58.375 | 0.323 |
+| 128 | 123.73 | 38.635 | 85.760 | 0.348 |
+
+Knee at 48 req/s: median TTFT 0.340 s against a 0.071 s baseline, and
+admission control shedding 19% of requests. Selected matrix ladder: 4, 16, 48,
+128. At 96 req/s the generator dispatched only 75 req/s and that row was
+excluded from the knee search; it did not affect the ladder. Every row is
+flagged `degraded` (more than 2% of requests dispatched over 0.25 s late),
+including the idle 4 req/s row, so client-side scheduling lag is present at
+all rates and is part of why TTFT p95 is noisy even when unloaded. Past the
+knee, latency percentiles describe *admitted* requests only; the error rate is
+the other half of the overload result and must be read with them.
+
+Known weakness: the keep-up test compares a realised Poisson dispatch rate to
+the nominal rate at 0.9. With ~120 requests per low-rate phase the realised
+rate alone varies by roughly 1/sqrt(120) ~ 9%, so a low rate can be excluded
+by chance. It did not happen here.
+
+**Spurious "-dirty".** The matrix artifacts from 5216059 carry
+`f0289c3a0b3e89d5ab0b0460088449f8928fc5c5-dirty`, while that job's stage-1
+verify artifact carries the same SHA clean. No tracked file changed during the
+job: `git status --porcelain` counted the job's own untracked result files.
+The artifacts stay as written (append-only); the code at that SHA is exactly
+what ran. `provenance.git_sha` now passes `--untracked-files=no`.
 
 ---
 
