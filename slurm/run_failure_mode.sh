@@ -23,7 +23,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=128
-#SBATCH --time=02:00:00
+#SBATCH --time=04:00:00
 #SBATCH --output=/mnt/tier2/project/p201362/ttahmid/inference-work/logs/ir_failure_%j.out
 
 set -uo pipefail
@@ -60,6 +60,9 @@ ir_log "host=$(hostname) job=${SLURM_JOB_ID} rate=${RATE} kill=r${KILL_IDX}"
 ROUTER_BIN="${CARGO_TARGET_DIR}/release/inference-router"
 [[ -x "$ROUTER_BIN" ]] || { ir_log "router binary missing"; exit 1; }
 
+PYTHONPATH="${HERE}/driver" "${IR_VENV}/bin/python" -c "import ir_driver.cli as c; c.build_parser().parse_args(['failure','--router','x','--replicas','r0=x','--model-path','x','--out-dir','x','--kill','r0','--kill-command','x','--rate','1','--restart-command','x'])" \
+    || { ir_log "FATAL: driver does not import or parse"; exit 1; }
+
 REV="$(python3 -c "import json;print(json.load(open('${IR_LOCKFILE}'))['models']['Qwen_Qwen2_5-7B-Instruct']['revision'])")"
 MODEL="$(ir_model_path "Qwen--Qwen2.5-7B-Instruct" "$REV")" || exit 1
 
@@ -68,17 +71,51 @@ mkdir -p "$OUT"
 trap ir_teardown EXIT
 
 KILL_PORT=$(( 8100 + KILL_IDX ))
-# Kill by port so the command is exact and re-runnable, and so it targets the
-# replica process rather than anything else that happens to match "vllm".
+KILL_GPU=$(( KILL_IDX % 4 ))
+RESTART_AFTER="${IR_RESTART_AFTER_S:-30}"
+# Kill by port so the command targets this replica and nothing else that
+# happens to match "vllm", then take the whole process tree down: vLLM's
+# EngineCore child does not carry --port on its command line, and if it
+# survived it would keep the GPU memory and make the restart fail for a reason
+# that has nothing to do with routing.
 KILL_SCRIPT="${OUT}/kill_r${KILL_IDX}.sh"
 cat > "$KILL_SCRIPT" <<EOF
 #!/bin/bash
 # SIGKILL, not SIGTERM: the point is an abrupt failure. A graceful shutdown
 # would let vLLM drain its in-flight requests, which is a much kinder
 # experiment than the one intended.
-pkill -9 -f "port ${KILL_PORT}"
+tree() { local p; for p in \$(pgrep -P "\$1"); do tree "\$p"; done; echo "\$1"; }
+roots=\$(pgrep -f -- "--port ${KILL_PORT}( |\$)")
+[ -z "\$roots" ] && { echo "no process matched port ${KILL_PORT}"; exit 1; }
+pids=\$(for r in \$roots; do tree "\$r"; done | sort -u)
+echo "killing: \$(echo \$pids)"
+kill -9 \$pids 2>/dev/null
+exit 0
 EOF
 chmod +x "$KILL_SCRIPT"
+
+# Relaunch into the same GPU and port once the dead tree has released the
+# memory. Waiting on nvidia-smi rather than a fixed sleep: a relaunch that
+# races the old allocation fails with "insufficient memory" and would be
+# recorded as a recovery failure.
+RESTART_SCRIPT="${OUT}/restart_r${KILL_IDX}.sh"
+cat > "$RESTART_SCRIPT" <<EOF
+#!/bin/bash
+type module >/dev/null 2>&1 || source /etc/profile
+source "${HERE}/env.sh"
+source "${HERE}/slurm/lib_replicas.sh"
+module load "${IR_MOD_ENV}" >/dev/null 2>&1
+module load "${IR_MOD_APPTAINER}" >/dev/null 2>&1
+for i in \$(seq 1 120); do
+    used=\$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -i ${KILL_GPU} | tr -d ' ')
+    [ "\$used" -lt 2000 ] && break
+    sleep 0.5
+done
+echo "gpu ${KILL_GPU} memory.used=\${used}MiB before relaunch (waited \$i polls)"
+ir_launch_replica ${KILL_GPU} ${KILL_PORT} "${MODEL}" qwen2.5-7b-instruct 0.90 256 \\
+    "\${RESTART_LOG}" </dev/null
+EOF
+chmod +x "$RESTART_SCRIPT"
 
 declare -a POLICIES=(round_robin least_loaded prefix_affinity prefix_affinity_bounded)
 
@@ -110,6 +147,7 @@ for POLICY in "${POLICIES[@]}"; do
     "$ROUTER_BIN" --config "$CFG" --log-json > "${OUT}/router_${POLICY}_${REP}.log" 2>&1 &
     for _ in $(seq 1 60); do curl -sf -m 2 http://127.0.0.1:8080/health >/dev/null 2>&1 && break; sleep 1; done
 
+    export RESTART_LOG="${OUT}/${POLICY}_rep${REP}_replica${KILL_IDX}_restart.log"
     PYTHONPATH="${HERE}/driver" "${IR_VENV}/bin/python" -m ir_driver.cli failure \
         --router http://127.0.0.1:8080 \
         --replicas "${REPL_ARGS[@]}" \
@@ -124,7 +162,12 @@ for POLICY in "${POLICIES[@]}"; do
         --kill "r${KILL_IDX}" \
         --kill-command "$KILL_SCRIPT" \
         --kill-after-s 30 \
-        --num-requests $(python3 -c "print(int(${RATE}*90))") \
+        --restart-command "$RESTART_SCRIPT" \
+        --restart-after-s "$RESTART_AFTER" \
+        --poll-interval-ms 250 \
+        `# 30 s before the kill, ~30 s to relaunch, a vLLM cold start, and at` \
+        `# least a minute after readmission, all under load: 420 s of arrivals.` \
+        --num-requests $(python3 -c "print(int(${RATE}*420))") \
         --health-interval-ms 500 \
         --unhealthy-threshold 2 || ir_log "failure trial ${POLICY} rep ${REP} returned non-zero"
 

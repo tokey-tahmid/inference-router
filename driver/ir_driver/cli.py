@@ -369,6 +369,61 @@ async def cmd_failure(args: argparse.Namespace) -> int:
         before_router = await ms.scrape(c, args.router)
 
     kill_event: dict[str, Any] = {}
+    restart_event: dict[str, Any] = {}
+    timeline: list[dict[str, Any]] = []
+    load_done = asyncio.Event()
+
+    async def run_cmd(cmd: str, ev: dict[str, Any], prefix: str) -> None:
+        ev[f"{prefix}_requested_unix"] = time.time()
+        proc = await asyncio.create_subprocess_exec(
+            *cmd.split(),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await proc.communicate()
+        ev[f"{prefix}_completed_unix"] = time.time()
+        ev[f"{prefix}_returncode"] = proc.returncode
+        ev[f"{prefix}_output"] = (out or b"").decode("utf-8", "replace")[:4000]
+
+    async def poller() -> None:
+        """Record the killed replica's health state throughout the trial.
+
+        Reading `last_transition_unix_us` once at the end only yields the
+        *latest* transition; with a restart that is the recovery, and the
+        ejection would be lost. Polling keeps both, and the transition times
+        themselves still come from the router's own microsecond clock.
+        """
+        async with httpx.AsyncClient(timeout=5.0) as pc:
+            while not load_done.is_set():
+                t = time.time()
+                try:
+                    fl = (await pc.get(f"{args.router}/admin/fleet")).json()
+                    for rep in fl.get("replicas", []):
+                        if rep["id"] == args.kill:
+                            timeline.append({
+                                "poll_unix": t,
+                                "healthy": rep.get("healthy"),
+                                "ejections_total": rep.get("ejections_total"),
+                                "recoveries_total": rep.get("recoveries_total"),
+                                "last_transition_unix_us": rep.get("last_transition_unix_us"),
+                                "fleet_healthy": fl.get("healthy_replicas"),
+                                "capacity": fl.get("capacity"),
+                            })
+                except (httpx.HTTPError, ValueError) as exc:
+                    timeline.append({"poll_unix": t, "error": str(exc)[:200]})
+                try:
+                    await asyncio.wait_for(load_done.wait(), args.poll_interval_ms / 1000.0)
+                except asyncio.TimeoutError:
+                    pass
+
+    async def restarter() -> None:
+        if not args.restart_command:
+            return
+        while "kill_completed_unix" not in kill_event:
+            await asyncio.sleep(0.2)
+        await asyncio.sleep(args.restart_after_s)
+        await run_cmd(args.restart_command, restart_event, "restart")
+        log.warning("replica_restart_launched", replica=args.kill, event=restart_event)
 
     async def killer() -> None:
         await asyncio.sleep(args.kill_after_s)
@@ -387,24 +442,39 @@ async def cmd_failure(args: argparse.Namespace) -> int:
         kill_event["kill_output"] = (out or b"").decode("utf-8", "replace")[:2000]
         log.warning("replica_killed", replica=args.kill, event=kill_event)
 
-    load_task = asyncio.create_task(
-        run_phase(args.router, reqs, args.rate, args.served_name, seed=99)
-    )
-    kill_task = asyncio.create_task(killer())
-    result, _ = await asyncio.gather(load_task, kill_task)
+    async def load() -> Any:
+        try:
+            return await run_phase(args.router, reqs, args.rate, args.served_name, seed=99)
+        finally:
+            load_done.set()
+
+    result, _, _, _ = await asyncio.gather(load(), killer(), poller(), restarter())
 
     async with httpx.AsyncClient(timeout=60.0) as c:
         after_router = await ms.scrape(c, args.router)
         fleet_after = (await c.get(f"{args.router}/admin/fleet")).json()
 
-    # Detection time: the router's recorded transition minus the kill instant.
-    transition_us = None
-    for rep in fleet_after.get("replicas", []):
-        if rep["id"] == args.kill:
-            transition_us = rep.get("last_transition_unix_us")
+    # Transitions from the polled timeline: the first poll where each counter
+    # moved carries the router's own timestamp of that transition.
+    def first_transition_us(counter: str) -> int | None:
+        base = next((p.get(counter) for p in timeline if p.get(counter) is not None), None)
+        for p in timeline:
+            v = p.get(counter)
+            if v is not None and base is not None and v > base:
+                return p.get("last_transition_unix_us")
+        return None
+
+    transition_us = first_transition_us("ejections_total")
+    recovery_us = first_transition_us("recoveries_total")
     detection_s = None
     if transition_us and kill_event.get("kill_requested_unix"):
         detection_s = (transition_us / 1e6) - kill_event["kill_requested_unix"]
+    recovery_s = None
+    if recovery_us and restart_event.get("restart_requested_unix"):
+        recovery_s = (recovery_us / 1e6) - restart_event["restart_requested_unix"]
+    ejected_s = None
+    if recovery_us and transition_us:
+        ejected_s = (recovery_us - transition_us) / 1e6
 
     records = result.records
     ok = [r for r in records if r.ok]
@@ -415,15 +485,20 @@ async def cmd_failure(args: argparse.Namespace) -> int:
         if kill_event.get("kill_requested_unix")
         else None
     )
+    recovery_offset = (
+        recovery_us / 1e6 - result.wall_start_unix if recovery_us else None
+    )
     buckets: dict[str, dict[str, int]] = {}
     if kill_offset is not None:
         for r in records:
             if r.scheduled_at < kill_offset:
                 b = "before_kill"
-            elif detection_s is not None and r.scheduled_at < kill_offset + max(detection_s, 0):
+            elif detection_s is None or r.scheduled_at < kill_offset + max(detection_s, 0):
                 b = "during_detection_window"
-            else:
+            elif recovery_offset is None or r.scheduled_at < recovery_offset:
                 b = "after_ejection"
+            else:
+                b = "after_recovery"
             d = buckets.setdefault(b, {"total": 0, "ok": 0, "failed": 0})
             d["total"] += 1
             d["ok" if r.ok else "failed"] += 1
@@ -446,6 +521,15 @@ async def cmd_failure(args: argparse.Namespace) -> int:
             "fleet": {"replicas": replicas, "router_url": args.router},
         },
         "kill_event": kill_event,
+        "restart_event": restart_event,
+        "health_timeline": timeline,
+        "recovery": {
+            "restart_after_kill_s": args.restart_after_s if args.restart_command else None,
+            "router_recovery_unix_us": recovery_us,
+            "restart_to_readmission_s": recovery_s,
+            "ejected_duration_s": ejected_s,
+            "recovery_offset_from_phase_start_s": recovery_offset,
+        },
         "detection": {
             "router_transition_unix_us": transition_us,
             "kill_requested_unix": kill_event.get("kill_requested_unix"),
@@ -468,6 +552,7 @@ async def cmd_failure(args: argparse.Namespace) -> int:
             "per_replica_dispatch_counts": {
                 rid: sum(1 for r in records if r.replica == rid) for rid in replicas
             },
+            "send_delay_s": stats.summarize([r.send_delay for r in records]),
             "status_code_counts": {
                 str(s): sum(1 for r in records if r.status == s)
                 for s in {r.status for r in records}
@@ -557,6 +642,11 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument("--shared-prefix-tokens", type=int, default=512)
     f.add_argument("--health-interval-ms", type=int, default=500)
     f.add_argument("--unhealthy-threshold", type=int, default=2)
+    f.add_argument("--restart-command", default=None,
+                   help="shell-less command that relaunches the killed replica")
+    f.add_argument("--restart-after-s", type=float, default=30.0,
+                   help="delay after the kill completes before relaunching")
+    f.add_argument("--poll-interval-ms", type=int, default=250)
 
     return p
 
