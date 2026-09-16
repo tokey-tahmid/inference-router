@@ -207,7 +207,37 @@ def iter_artifacts(raw_dir: Path = RAW) -> Iterator[Phase]:
             continue
         if "full_config_dict" not in obj or "phase" not in obj.get("full_config_dict", {}):
             continue  # verification / density artifacts have a different shape
+        if obj.get("kind") == "failure_mode":
+            continue  # separate experiment, loaded by load_failure_trials
         yield Phase(path=p, raw=obj)
+
+
+def load_failure_trials(raw_dir: Path = RAW) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Failure-mode artifacts from the most recent failure job (or IR_FAILURE_JOB).
+
+    Every trial is its own driver process and so its own run_id; the Slurm job
+    is what groups a set of trials run against the same code and node.
+    """
+    trials = []
+    for p in sorted(raw_dir.glob("*.json")):
+        try:
+            with p.open() as fh:
+                obj = json.load(fh)
+        except (json.JSONDecodeError, OSError) as exc:
+            print(f"WARNING: cannot read {p.name}: {exc}")
+            continue
+        if obj.get("kind") == "failure_mode":
+            obj["_path"] = p.name
+            trials.append(obj)
+    jobs = sorted({str(t.get("slurm_job_id")) for t in trials})
+    chosen = os.environ.get("IR_FAILURE_JOB") or (
+        max(jobs, key=lambda j: max(str(t.get("utc_timestamp")) for t in trials
+                                    if str(t.get("slurm_job_id")) == j))
+        if jobs else None
+    )
+    sel = [t for t in trials if str(t.get("slurm_job_id")) == chosen]
+    return sel, {"slurm_job_id": chosen, "trials": len(sel),
+                 "superseded_jobs": [j for j in jobs if j != chosen]}
 
 
 def load_measurements(raw_dir: Path = RAW) -> tuple[list[Phase], dict[str, Any]]:

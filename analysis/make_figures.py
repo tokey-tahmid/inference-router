@@ -25,7 +25,13 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from load import Phase, group, hardware_caption, load_measurements  # noqa: E402
+from load import (  # noqa: E402
+    Phase,
+    group,
+    hardware_caption,
+    load_failure_trials,
+    load_measurements,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 FIGS = REPO / "results" / "figures"
@@ -384,7 +390,134 @@ def fig_streaming_evidence(phases: list[Phase], caption: str) -> None:
     )
 
 
-def write_results_md(phases: list[Phase], inventory: dict[str, Any], caption: str) -> None:
+def _failure_row(t: dict[str, Any]) -> dict[str, Any]:
+    """Per-trial quantities, every one read or counted from the artifact."""
+    killed = t["full_config_dict"]["killed_replica"]
+    s = t.get("summary", {})
+    rec = t.get("recovery", {})
+    b = s.get("buckets_relative_to_kill", {})
+    after = [r for r in t.get("per_request", []) if rec.get("recovery_offset_from_phase_start_s") is not None
+             and r["scheduled_at"] >= rec["recovery_offset_from_phase_start_s"]]
+    share_back = (sum(1 for r in after if r.get("replica") == killed) / len(after)) if after else None
+    return {
+        "policy": t["full_config_dict"]["phase"]["policy"],
+        "detection_s": t.get("detection", {}).get("detection_latency_s"),
+        "readmission_s": rec.get("restart_to_readmission_s"),
+        "ejected_s": rec.get("ejected_duration_s"),
+        # Scheduled before the kill but failed: in flight on the killed replica.
+        "failed_before_kill": b.get("before_kill", {}).get("failed"),
+        "failed_during_detection": b.get("during_detection_window", {}).get("failed"),
+        "failed_after_ejection": b.get("after_ejection", {}).get("failed"),
+        "failed_after_recovery": b.get("after_recovery", {}).get("failed"),
+        "error_rate": s.get("error_rate"),
+        "killed_share_after_recovery": share_back,
+        "restart_rc": t.get("restart_event", {}).get("restart_returncode"),
+    }
+
+
+def fig_failure(trials: list[dict[str, Any]], caption: str) -> None:
+    """Failed requests over time around the kill, one panel per policy."""
+    if not trials:
+        return
+    pols = [p for p in POLICY_ORDER if any(t["full_config_dict"]["phase"]["policy"] == p for t in trials)]
+    fig, axes = plt.subplots(len(pols), 1, figsize=(8.0, 2.2 * len(pols)), sharex=True, squeeze=False)
+    binw = 2.0
+    for ax, pol in zip(axes[:, 0], pols, strict=True):
+        for t in [t for t in trials if t["full_config_dict"]["phase"]["policy"] == pol]:
+            k = t["summary"].get("kill_offset_from_phase_start_s")
+            if k is None:
+                continue
+            recs = t.get("per_request", [])
+            if not recs:
+                continue
+            xs = np.array([r["scheduled_at"] - k for r in recs])
+            fails = np.array([0 if r.get("ok") else 1 for r in recs])
+            edges = np.arange(np.floor(xs.min()), np.ceil(xs.max()) + binw, binw)
+            tot, _ = np.histogram(xs, edges)
+            bad, _ = np.histogram(xs, edges, weights=fails)
+            frac = np.divide(bad, tot, out=np.full_like(bad, np.nan, dtype=float), where=tot > 0)
+            rep = t.get("repetition_index")
+            line, = ax.plot(edges[:-1] + binw / 2, frac, lw=1.0, alpha=0.8, label=f"rep {rep}")
+            det = t.get("detection", {}).get("detection_latency_s")
+            if det is not None:
+                ax.axvline(det, color=line.get_color(), ls=":", lw=0.9)
+            ro = t.get("recovery", {}).get("recovery_offset_from_phase_start_s")
+            if ro is not None:
+                ax.axvline(ro - k, color=line.get_color(), ls="--", lw=0.9)
+        ax.axvline(0, color="k", lw=1.0)
+        ax.set_ylabel("failed fraction")
+        ax.set_title(POLICY_LABEL[pol], fontsize=10)
+        ax.set_ylim(-0.02, 1.02)
+        ax.grid(alpha=0.3, ls=":")
+        ax.legend(fontsize=7, loc="upper right")
+    axes[-1][0].set_xlabel("request scheduled time relative to SIGKILL (s)")
+    fig.suptitle("Replica failure: failed requests around the kill, ejection and readmission", fontsize=12)
+    fig.tight_layout(rect=(0, 0.04, 1, 1))
+    _finish(
+        fig,
+        FIGS / "failure_mode_timeline.png",
+        f"{binw:g} s bins by scheduled arrival. Solid black: SIGKILL. Dotted: router ejected the "
+        f"replica. Dashed: router readmitted the relaunched replica. {caption}",
+    )
+
+
+def failure_md(trials: list[dict[str, Any]], finv: dict[str, Any]) -> list[str]:
+    out = ["## Replica failure and recovery", ""]
+    if not trials:
+        return out + ["**Not yet measured.** No failure-mode artifacts present.", ""]
+    t0 = trials[0]
+    fc = t0["full_config_dict"]
+    out += [
+        f"Slurm job {finv['slurm_job_id']}, {finv['trials']} trials. Replica "
+        f"`{fc['killed_replica']}` SIGKILLed (whole process tree) {fc['kill_after_s']:g} s into "
+        f"an open-loop phase at {fc['phase']['request_rate']:g} req/s, shared-prefix ratio "
+        f"{fc['phase']['shared_prefix_ratio']:g}, then relaunched "
+        f"{t0.get('recovery', {}).get('restart_after_kill_s')} s after the kill completed. "
+        f"Health check every {t0['detection']['health_interval_ms']} ms, ejection after "
+        f"{t0['detection']['unhealthy_threshold']} failures, so detection cannot be faster than "
+        f"about {t0['detection']['expected_lower_bound_s']:g} s. Each trial starts a fresh fleet.",
+        "",
+        "`readmission` is from the relaunch command to the router readmitting the replica "
+        "(dominated by vLLM cold start). `share back` is the killed replica's share of requests "
+        "scheduled after readmission (0.25 would be an even split).",
+        "",
+        "| policy | N | detection (s) | readmission (s) | ejected for (s) | failed, scheduled before kill "
+        "| failed, kill to ejection | failed while ejected | failed after readmission | error rate | share back |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    rows = [_failure_row(t) for t in trials]
+
+    def f(vals: list[Any], nd: int) -> str:
+        s = med_lo_hi(vals)
+        return "not measured" if s is None else f"{s[0]:.{nd}f} ({s[1]:.{nd}f}-{s[2]:.{nd}f})"
+
+    for pol in POLICY_ORDER:
+        rs = [r for r in rows if r["policy"] == pol]
+        if not rs:
+            continue
+        out.append(
+            f"| {POLICY_LABEL[pol]} | {len(rs)} | {f([r['detection_s'] for r in rs], 2)} "
+            f"| {f([r['readmission_s'] for r in rs], 1)} | {f([r['ejected_s'] for r in rs], 1)} "
+            f"| {f([r['failed_before_kill'] for r in rs], 0)} "
+            f"| {f([r['failed_during_detection'] for r in rs], 0)} "
+            f"| {f([r['failed_after_ejection'] for r in rs], 0)} "
+            f"| {f([r['failed_after_recovery'] for r in rs], 0)} "
+            f"| {f([r['error_rate'] for r in rs], 4)} "
+            f"| {f([r['killed_share_after_recovery'] for r in rs], 3)} |"
+        )
+    bad = [r for r in rows if r["restart_rc"] not in (0, None)]
+    if bad:
+        out += ["", f"{len(bad)} trial(s) had a non-zero relaunch return code; see the artifacts."]
+    out.append("")
+    return out
+
+
+def write_results_md(
+    phases: list[Phase],
+    inventory: dict[str, Any],
+    caption: str,
+    failure_lines: list[str] | None = None,
+) -> None:
     """Emit results/RESULTS.md: every table regenerated, none transcribed."""
     out = [
         "# Results",
@@ -441,6 +574,7 @@ def write_results_md(phases: list[Phase], inventory: dict[str, Any], caption: st
 
     if not phases:
         out += ["## Measurements", "", "**Not yet measured.** No usable artifacts present.", ""]
+        out += failure_lines or []
         (REPO / "results" / "RESULTS.md").write_text("\n".join(out))
         return
 
@@ -536,6 +670,7 @@ def write_results_md(phases: list[Phase], inventory: dict[str, Any], caption: st
     out.append("")
     out.append("`n/m` = not measured for that replica in these repetitions.")
     out.append("")
+    out += failure_lines or []
     (REPO / "results" / "RESULTS.md").write_text("\n".join(out))
     print(f"  wrote results/RESULTS.md ({len(out)} lines)")
 
@@ -544,6 +679,10 @@ def main() -> int:
     FIGS.mkdir(parents=True, exist_ok=True)
     phases, inventory = load_measurements()
     caption = hardware_caption(phases)
+    trials, finv = load_failure_trials()
+    print("Failure-mode inventory:", json.dumps(finv))
+    fig_failure(trials, caption)
+    failure_lines = failure_md(trials, finv)
 
     print("Inventory:")
     print(json.dumps({k: v for k, v in inventory.items() if k != "degraded_detail"}, indent=2))
@@ -552,7 +691,7 @@ def main() -> int:
         print("\nNo usable measurements in results/raw/. Nothing to plot.")
         print("This is the correct outcome before a real run exists; no placeholder")
         print("figures are generated.")
-        write_results_md(phases, inventory, caption)
+        write_results_md(phases, inventory, caption, failure_lines)
         return 0
 
     print(f"\nGenerating figures for {len(phases)} usable phases...")
@@ -562,7 +701,7 @@ def main() -> int:
     fig_throughput_error(phases, caption)
     fig_spill(phases, caption)
     fig_streaming_evidence(phases, caption)
-    write_results_md(phases, inventory, caption)
+    write_results_md(phases, inventory, caption, failure_lines)
     return 0
 
 
