@@ -37,6 +37,10 @@ export HF_HUB_CACHE="${IR_DATA}/hf_cache/hub"
 # Cargo's registry and build outputs go to project storage: $HOME is small and
 # a release build of this dependency tree is well over a GB.
 export CARGO_HOME="${IR_DATA}/cargo_home"
+# rustup-managed toolchain, also on project storage. See slurm/build.sh for why
+# the cluster's Rust module is no longer used.
+export RUSTUP_HOME="${IR_DATA}/rustup_home"
+export PATH="${CARGO_HOME}/bin:${PATH}"
 export IR_TARGET_DIR="${IR_DATA}/router_target"
 export CARGO_TARGET_DIR="${IR_TARGET_DIR}"
 
@@ -44,7 +48,9 @@ export CARGO_TARGET_DIR="${IR_TARGET_DIR}"
 # behind that meta-module, and its absence gives the misleading Lmod error
 # "exist but cannot be loaded as requested".
 export IR_MOD_ENV="env/release/2025.1"
+# Kept for reference only; build.sh no longer loads it. MeluXina's sole Rust
+# module is 1.85.1, too old for the current dependency tree.
 export IR_MOD_RUST="Rust/1.85.1-GCCcore-14.2.0"
 export IR_MOD_APPTAINER="Apptainer/1.4.2-GCCcore-14.2.0"
 
-mkdir -p "$IR_LOGS" "$CARGO_HOME" "$IR_TARGET_DIR" 2>/dev/null || true
+mkdir -p "$IR_LOGS" "$CARGO_HOME" "$RUSTUP_HOME" "$IR_TARGET_DIR" 2>/dev/null || true

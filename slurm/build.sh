@@ -46,15 +46,46 @@ log() { printf '[build %s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 log "host=$(hostname) job=${SLURM_JOB_ID} repo=${HERE}"
 
 module load "$IR_MOD_ENV"
-# Confirm the exact module name rather than trusting a remembered one.
-log "available Rust modules:"
-module -t avail Rust 2>&1 | sed 's/^/  /'
-module load "$IR_MOD_RUST"
 
-log "toolchain:"
+# Toolchain: rustup-managed stable, installed into project storage.
+#
+# MeluXina exposes exactly one Rust module, 1.85.1, and the dependency tree has
+# outgrown it: reqwest -> url -> idna -> icu_* now reaches `yoke-derive`, which
+# calls `str::from_utf8` as an inherent associated function, and that needs a
+# newer compiler (build 5214119: error[E0599] in yoke-derive).
+#
+# `resolver = "3"` with `rust-version = "1.85"` was the first attempt at this and
+# it cannot be made airtight. The MSRV-aware resolver can only honour the
+# `rust-version` that each UPSTREAM crate declares; a crate that omits it, or
+# declares it wrongly, gives the resolver nothing to act on. So pinning our own
+# floor protects against well-behaved dependencies only, and the failure moves
+# to whichever transitive crate is least careful, one build at a time.
+#
+# Compute nodes have outbound internet on this cluster, and rustup needs no
+# root, so installing a current toolchain removes the whole class of problem
+# instead of chasing it crate by crate. The exact version installed is logged
+# below and recorded in the build provenance, so "stable" never becomes an
+# unrecorded moving target.
+if [[ ! -x "${CARGO_HOME}/bin/rustup" ]]; then
+    log "installing rustup into ${RUSTUP_HOME} / ${CARGO_HOME}"
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --no-modify-path --profile minimal \
+            --default-toolchain stable --component clippy,rustfmt
+fi
+rustup toolchain install stable --profile minimal --component clippy,rustfmt >/dev/null
+rustup default stable >/dev/null
+
+log "toolchain (recorded as build provenance):"
 cargo --version
 rustc --version
-log "CARGO_HOME=${CARGO_HOME} CARGO_TARGET_DIR=${CARGO_TARGET_DIR}"
+cargo clippy --version
+{
+    echo "rustc=$(rustc --version)"
+    echo "cargo=$(cargo --version)"
+    echo "built_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "slurm_job_id=${SLURM_JOB_ID:-none}"
+} > "${HERE}/toolchain.lock"
+log "CARGO_HOME=${CARGO_HOME} RUSTUP_HOME=${RUSTUP_HOME} CARGO_TARGET_DIR=${CARGO_TARGET_DIR}"
 
 cd "$HERE"
 

@@ -2,20 +2,26 @@
 name = "inference-router"
 version = "0.1.0"
 edition = "2021"
-# MeluXina's EasyBuild tree carries exactly one Rust: `Rust/1.85.1-GCCcore-14.2.0`
-# (`module -t avail Rust` in job 5211438 lists no other). Several crates in
-# reqwest's transitive `url` -> `idna` -> `icu_*` chain have since raised their
-# MSRV to 1.88, so a default resolve picks versions that cannot compile here.
-#
-# `resolver = "3"` is cargo's MSRV-aware resolver: it treats `rust-version`
-# below as a constraint and selects the newest dependency versions that still
-# support it, instead of the newest that exist. That is far more robust than
-# hand-pinning a dozen `icu_*` crates with `--precise`, which would need
-# redoing every time the chain moves.
-rust-version = "1.85"
-resolver = "3"
 description = "Prefix-aware request router for LLM inference replica fleets"
 license = "MIT"
+# No `rust-version` is declared, deliberately.
+#
+# An earlier revision declared 1.85 (MeluXina's only Rust module; `module -t
+# avail Rust` in job 5211438 lists no other) and relied on `resolver = "3"`, the
+# MSRV-aware resolver, to pick dependency versions that still build on it. That
+# could not be made airtight: the resolver can only honour the `rust-version`
+# each UPSTREAM crate declares. `yoke-derive`, reached via
+# reqwest -> url -> idna -> icu_*, needs a newer compiler without declaring it,
+# so build 5214119 failed with error[E0599] (`str::from_utf8` as an inherent
+# associated function). Pinning our own floor only protects against
+# well-behaved dependencies, and the failure just moves to whichever transitive
+# crate is least careful.
+#
+# A declared floor this crate does not actually build on is worse than none, so
+# the claim is removed. The toolchain is now rustup-managed stable, installed by
+# slurm/build.sh, and the exact compiler used is recorded per build in
+# `toolchain.lock`.
+resolver = "3"
 
 [[bin]]
 name = "inference-router"
