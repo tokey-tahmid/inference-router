@@ -80,15 +80,52 @@ ir_log "=== python syntax gate ==="
 "$PY" -m compileall -q "${HERE}/driver" || { ir_log "FATAL: driver does not compile"; exit 1; }
 "$PY" -c "import ir_driver.cli, ir_driver.experiment, ir_driver.loadgen, ir_driver.pick_rates, ir_driver.stats, ir_driver.metrics_scrape, ir_driver.provenance; import llm_inference_bench.workload as w; print('  imports OK, P1 workload generator:', w.__file__)" \
     || { ir_log "FATAL: driver imports failed"; exit 1; }
+# Logic gate: exercise the knee picker on the committed calibration from job
+# 5215612 (read-only) and the rate-scaled matrix expansion, so a bug in either
+# fails here in seconds rather than after stages 1-4.
+"$PY" - "${HERE}/results/calibration" <<'PYEOF' || { ir_log "FATAL: driver logic gate failed"; exit 1; }
+import pathlib, sys
+from ir_driver.pick_rates import load_calibration, pick, format_table
+from ir_driver.experiment import build_matrix
+rows = load_calibration(pathlib.Path(sys.argv[1]))
+res = pick(rows)
+print(format_table(res["table"]))
+print("  prior calibration ->", res["rates"], "|", res["reason"])
+ph = build_matrix(["round_robin"], [0.6], [4.0, 64.0], 1, warmup=False,
+                  num_requests=200, min_duration_s=20)
+got = [p.num_requests for p in ph]
+assert got == [200, 1280], got
+print("  build_matrix request scaling OK:", got)
+PYEOF
 
 REV="$("$PY" -c "import json;print(json.load(open('${IR_LOCKFILE}'))['models']['Qwen_Qwen2_5-7B-Instruct']['revision'])")"
 MODEL="$(ir_model_path "Qwen--Qwen2.5-7B-Instruct" "$REV")" || exit 1
 ir_log "model=${MODEL}"
 ir_log "revision=${REV} (copied verbatim from ${IR_LOCKFILE}, never retyped)"
 
-JOB_END=$(date -d "+$(squeue -j "${JOB}" -h -o %L)" +%s 2>/dev/null || echo 0)
+# Job end time, read as an ISO timestamp (squeue %e), which `date -d` parses.
+#
+# This previously read the time-LEFT field (%L, e.g. "5:59:30") and passed it to
+# `date -d "+5:59:30"`. GNU date rejects that ("invalid date"), and a trailing
+# `|| echo 0` turned the failure into JOB_END=0, so remaining() was 0 from the
+# first second. A 600 s floor on the matrix budget then turned that obviously
+# broken 0 into a plausible-looking 10 minutes. Job 5215612 ran 8 of 192 phases
+# in a 6 h allocation and reported "FULL EXPERIMENT COMPLETE (rc=0)".
+#
+# Two silent defaults stacked: either alone would have been caught, together
+# they produced a wrong answer that looked like a finished experiment. So this
+# now fails loudly instead of defaulting.
+END_ISO="$(squeue -j "${JOB}" -h -o %e 2>/dev/null | tr -d '[:space:]')"
+if ! JOB_END=$(date -d "${END_ISO}" +%s 2>/dev/null) || [[ -z "${END_ISO}" ]]; then
+    ir_log "FATAL: cannot determine job end time (squeue %e returned '${END_ISO}')"
+    exit 1
+fi
 remaining() { local n; n=$(date +%s); echo $(( JOB_END > n ? JOB_END - n : 0 )); }
-ir_log "wall clock remaining: $(remaining)s"
+ir_log "job ends at ${END_ISO}; wall clock remaining: $(remaining)s"
+if (( $(remaining) < 1800 )); then
+    ir_log "FATAL: only $(remaining)s of wall clock at start; refusing to run a truncated experiment"
+    exit 1
+fi
 
 trap ir_teardown EXIT
 
@@ -258,7 +295,14 @@ TOPO="4x A100-SXM4-40GB on ${NODE}, one TP=1 vLLM replica per GPU at gpu_memory_
 
 ############################################################ stage 4: calibrate
 ir_log "=============== STAGE 4: rate calibration against THIS fleet ==============="
-CAL_LADDER="${IR_LADDER:-2 4 8 12 16 24 32}"
+# Job 5215612 ran 2..32 and never saturated the fleet (median TTFT flat at
+# 0.07-0.10 s, zero errors), so the ladder now reaches well past that.
+CAL_LADDER="${IR_LADDER:-4 8 16 32 48 64 96 128}"
+# Per-job directory: pick_rates reads every artifact in the directory it is
+# given, and mixing an earlier job's calibration into this one's knee search
+# would locate a knee against a different fleet.
+CAL_DIR="${HERE}/results/calibration/${SLURM_JOB_ID}"
+mkdir -p "$CAL_DIR"
 ir_log "ladder: ${CAL_LADDER}"
 # N=1, no warmup, short phases: this locates a knee, it does not produce
 # headline numbers. Artifacts are still written with repetition/warmup marked
@@ -267,15 +311,15 @@ ir_log "ladder: ${CAL_LADDER}"
     --router http://127.0.0.1:8080 \
     --replicas "${REPL_ARGS[@]}" --placements "${PLACE_ARGS[@]}" \
     --model-path "$MODEL" --served-name qwen2.5-7b-instruct \
-    --lockfile "$IR_LOCKFILE" --out-dir "${HERE}/results/calibration" \
+    --lockfile "$IR_LOCKFILE" --out-dir "$CAL_DIR" \
     --policies round_robin --ratios 0.6 --rates $CAL_LADDER \
-    --repetitions 1 --no-warmup --num-requests 120 \
+    --repetitions 1 --no-warmup --num-requests 120 --min-duration-s 30 \
     --replicas-per-gpu 1 --gpus-used 4 --nodes-used 1 \
     --topology-note "RATE CALIBRATION (N=1, not a headline measurement). ${TOPO}" \
-    --budget-s 2400
+    --budget-s 3000
 ir_log "calibration rc=$?"
 
-RATES="$("$PY" - "${HERE}/results/calibration" <<'PYEOF'
+RATES="$("$PY" - "$CAL_DIR" <<'PYEOF'
 import sys, pathlib, json
 sys.path.insert(0, "/home/users/u104240/apps/inference-work/inference-router/driver")
 from ir_driver.pick_rates import load_calibration, pick, format_table
@@ -295,7 +339,13 @@ fi
 ############################################################ stage 5: matrix
 ir_log "=============== STAGE 5: experiment matrix ==============="
 BUDGET=$(( $(remaining) - 900 ))
-(( BUDGET < 600 )) && BUDGET=600
+# No silent floor. A small or negative budget is a real problem to surface, not
+# a number to round up into something that looks reasonable (see the note on
+# JOB_END above for what that rounding once hid).
+if (( BUDGET < 600 )); then
+    ir_log "FATAL: matrix budget would be ${BUDGET}s after stages 1-4; not enough to run a meaningful matrix"
+    exit 1
+fi
 ir_log "matrix budget: ${BUDGET}s"
 
 # Policy-vs-ratio is the headline interaction, so all 4 policies x all 4 ratios
@@ -310,7 +360,7 @@ ir_log "matrix budget: ${BUDGET}s"
     --ratios 0.0 0.3 0.6 0.9 \
     --rates $RATES \
     --repetitions 3 \
-    --num-requests 200 --input-tokens 1024 --output-tokens 128 \
+    --num-requests 200 --min-duration-s 20 --input-tokens 1024 --output-tokens 128 \
     --shared-prefix-tokens 512 --num-prefix-groups 1 \
     --replicas-per-gpu 1 --gpus-used 4 --nodes-used 1 \
     --topology-note "$TOPO" \

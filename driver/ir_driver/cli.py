@@ -264,6 +264,7 @@ async def cmd_matrix(args: argparse.Namespace) -> int:
         repetitions=args.repetitions,
         warmup=not args.no_warmup,
         num_requests=args.num_requests,
+        min_duration_s=args.min_duration_s,
         input_tokens=args.input_tokens,
         output_tokens=args.output_tokens,
         shared_prefix_tokens=args.shared_prefix_tokens,
@@ -519,6 +520,12 @@ def build_parser() -> argparse.ArgumentParser:
     m.add_argument("--repetitions", type=int, default=3)
     m.add_argument("--no-warmup", action="store_true")
     m.add_argument("--num-requests", type=int, default=240)
+    m.add_argument(
+        "--min-duration-s",
+        type=float,
+        default=0.0,
+        help="raise the per-phase request count so arrivals span at least this long",
+    )
     m.add_argument("--input-tokens", type=int, default=1024)
     m.add_argument("--output-tokens", type=int, default=128)
     m.add_argument("--shared-prefix-tokens", type=int, default=512)

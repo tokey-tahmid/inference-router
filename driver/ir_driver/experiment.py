@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -301,13 +302,39 @@ def _assemble(**kw: Any) -> dict[str, Any]:
         r.completion_tokens for r in ok if r.completion_tokens is not None
     )
 
+    # Achieved rate over the DISPATCH window, not over total elapsed time.
+    #
+    # `len(ok) / elapsed_s` divides by a span that runs to the last *completion*,
+    # so it always includes the drain tail. On a short phase that tail is a large
+    # share of elapsed, and the ratio achieved/offered then falls steadily with
+    # offered rate on a fleet that is nowhere near saturated (calibration run
+    # 5215612: 0.92 -> 0.66 across 2..32 req/s while TTFT p50 stayed flat at
+    # 0.07-0.10 s with zero errors). That artifact was read as a saturation knee.
+    #
+    # The dispatch window (first send to last send) is the interval over which
+    # load was actually offered, so rate over it measures whether the generator
+    # kept up, free of the tail. `elapsed_s` and the old ratio are kept, renamed,
+    # so older artifacts stay comparable.
+    sends = [r.sent_at for r in records if r.sent_at is not None]
+    dispatch_window_s = (max(sends) - min(sends)) if len(sends) > 1 else None
+
     summary: dict[str, Any] = {
         "requests_attempted": len(records),
         "requests_ok": len(ok),
         "requests_failed": len(failed),
         "error_rate": len(failed) / len(records) if records else None,
         "elapsed_s": result.elapsed_s,
-        "achieved_request_rate_per_s": len(ok) / result.elapsed_s if result.elapsed_s > 0 else None,
+        "dispatch_window_s": dispatch_window_s,
+        # Requests actually dispatched per second over the offered window. This
+        # is the keep-up signal; compare it with offered_request_rate_per_s.
+        "achieved_request_rate_per_s": (
+            (len(records) - 1) / dispatch_window_s if dispatch_window_s else None
+        ),
+        # The tail-contaminated form, retained for comparability, never used to
+        # locate a knee.
+        "completion_rate_incl_tail_per_s": (
+            len(ok) / result.elapsed_s if result.elapsed_s > 0 else None
+        ),
         "offered_request_rate_per_s": spec.request_rate,
         "output_tokens_total": completed_output_tokens,
         "output_tokens_per_s": (
@@ -399,6 +426,7 @@ def build_matrix(
     repetitions: int,
     *,
     warmup: bool = True,
+    min_duration_s: float = 0.0,
     **phase_kwargs: Any,
 ) -> list[PhaseSpec]:
     """Enumerate the experiment matrix.
@@ -412,11 +440,18 @@ def build_matrix(
     `warmup=true`: the first run of any config pays CUDA graph capture,
     allocator growth and cache population. It is recorded and excluded in
     analysis, never silently dropped.
+
+    `min_duration_s` scales the request count with rate so every phase offers
+    load for at least that long. A fixed count shrinks the arrival window as
+    rate rises (200 requests at 64 req/s is ~3 s), which is too short for an
+    overloaded fleet to build a backlog, so overload would read as underload.
     """
     out: list[PhaseSpec] = []
+    base_n = phase_kwargs.pop("num_requests", PhaseSpec.num_requests)
     for policy in policies:
         for ratio in ratios:
             for rate in rates:
+                phase_kwargs["num_requests"] = max(base_n, math.ceil(rate * min_duration_s))
                 if warmup:
                     out.append(
                         PhaseSpec(

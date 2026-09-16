@@ -7,15 +7,36 @@ single-GPU replicas costs -34% throughput versus isolation, so a ladder derived
 from isolated-replica throughput would place every "overload" point inside the
 stable region and the matrix would compare four policies that never contend.
 
-Saturation is located by the first rate where the fleet stops keeping up, using
-two independent signals so a single noisy phase cannot move the knee:
+Saturation is located from the SERVER's behaviour, by the first rate where
 
-  * achieved throughput falls below `keep_up_frac` of offered, and/or
+  * median TTFT rises above `latency_factor` x its lowest-rate baseline
+    (queueing: under open-loop overload the backlog grows and every request
+    waits longer), or
   * the error rate rises above `err_thresh` (admission control shedding).
 
-Both are read from committed artifacts. If no rate saturates, that is reported
-rather than papered over: the ladder then spans the measured range and the
-caller is told the top of it was never driven into overload.
+Median, not p95. TTFT is measured from each request's *scheduled* arrival, the
+correct open-loop method, so a client-side stall inflates TTFT directly. Stalls
+hit a few requests, so they pollute the tail and leave the median clean: in
+calibration run 5215612, p95 was highest at the LOWEST rates (0.84 s and 1.50 s
+at 2 and 4 req/s) while p50 sat flat at 0.07-0.10 s. A p95 criterion would have
+located the knee exactly where the fleet was idlest.
+
+An earlier version used "achieved throughput < keep_up_frac x offered". That
+ratio was computed over total elapsed time including the drain tail, and on
+short phases it fell steadily with offered rate on a fleet that never saturated
+(0.92 -> 0.66 across 2..32 req/s, zero errors). It fired at 4 req/s, called that
+the knee, and produced an all-underload ladder that would have compared four
+routing policies on a fleet that never contends. The docstring also promised
+two independent signals so one noisy phase could not move the knee, while the
+code broke on the first signal that fired. Both are corrected here.
+
+Client keep-up is a SEPARATE check. If the generator cannot dispatch at the
+offered rate, the server has not saturated; the measurement at that rate is
+simply invalid. Such rates are reported and excluded, never promoted to a knee.
+
+If no rate saturates, that is reported rather than papered over: the ladder then
+spans the measured range and the caller is told the top of it was never driven
+into overload.
 """
 
 from __future__ import annotations
@@ -60,20 +81,42 @@ def pick(
     *,
     keep_up_frac: float = 0.90,
     err_thresh: float = 0.01,
+    latency_factor: float = 3.0,
     n: int = 4,
 ) -> dict[str, Any]:
     """Return {'rates': [...], 'knee': float|None, 'reason': str, 'table': rows}."""
     if not rows:
         return {"rates": [], "knee": None, "reason": "no calibration artifacts found", "table": []}
 
+    # Client keep-up: a rate the generator could not actually offer is not a
+    # measurement of the server at all. Mark it and drop it before knee search.
+    client_lagged = [
+        r["offered"] for r in rows
+        if r.get("achieved") is not None and r["achieved"] < keep_up_frac * r["offered"]
+    ]
+    usable = [r for r in rows if r["offered"] not in client_lagged]
+    if not usable:
+        return {
+            "rates": [], "knee": None, "table": rows,
+            "reason": "the load generator fell behind at every calibration rate; "
+                      "no server measurement is valid",
+        }
+
+    base = next((r["ttft_p50"] for r in usable if r.get("ttft_p50")), None)
     knee = None
-    for r in rows:
-        saturated = r["achieved"] < keep_up_frac * r["offered"]
-        shedding = (r["error_rate"] or 0.0) > err_thresh
-        if saturated or shedding:
+    knee_signal = None
+    for r in usable:
+        blowup = bool(base and r.get("ttft_p50") and r["ttft_p50"] > latency_factor * base)
+        shedding = (r.get("error_rate") or 0.0) > err_thresh
+        if blowup or shedding:
             knee = r["offered"]
+            knee_signal = (
+                f"median TTFT {r['ttft_p50']:.3f}s > {latency_factor:g}x baseline {base:.3f}s"
+                if blowup else f"error rate {r['error_rate']:.3f} > {err_thresh:g}"
+            )
             break
 
+    rows = usable
     offered = [r["offered"] for r in rows]
     if knee is None:
         # Never driven into overload. Say so; do not invent a higher rate than
@@ -85,8 +128,10 @@ def pick(
             "knee": None,
             "reason": (
                 f"no rate in the calibration ladder saturated the fleet "
-                f"(max offered {hi:g} req/s still kept up); the ladder spans the "
-                f"measured range but its top point is NOT verified overload"
+                f"(median TTFT never exceeded {latency_factor:g}x baseline and no "
+                f"shedding up to {hi:g} req/s); the ladder spans the measured "
+                f"range but its top point is NOT verified overload"
+                + (f"; client fell behind at {client_lagged}" if client_lagged else "")
             ),
             "table": rows,
         }
@@ -112,8 +157,8 @@ def pick(
     return {
         "rates": picks,
         "knee": knee,
-        "reason": f"knee located at {knee:g} req/s (first rate where achieved < "
-                  f"{keep_up_frac:g}x offered or error rate > {err_thresh:g})",
+        "reason": f"knee located at {knee:g} req/s ({knee_signal})"
+                  + (f"; client fell behind at {client_lagged}, excluded" if client_lagged else ""),
         "table": rows,
     }
 
