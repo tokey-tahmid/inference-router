@@ -281,13 +281,14 @@ rate alone varies by roughly 1/sqrt(120) ~ 9%, so a low rate can be excluded
 by chance. It did not happen here.
 
 **Spurious "-dirty".** The matrix artifacts from 5216059 carry
-`f0289c3a0b3e89d5ab0b0460088449f8928fc5c5-dirty`, while that job's stage-1
+`f0289c3a0b3e89d5ab0b0460088449f8928fc5c5-dirty` (pre-rewrite; see the SHA
+map below), while that job's stage-1
 verify artifact carries the same SHA clean. No tracked file changed during the
 job: `git status --porcelain` counted the job's own untracked result files.
 The artifacts stay as written (append-only); the code at that SHA is exactly
 what ran. `provenance.git_sha` now passes `--untracked-files=no`.
 
-Two later failure-mode trials (job 5216528, SHA `451d2a88`) are also stamped
+Two later failure-mode trials (job 5216528, pre-rewrite SHA `451d2a88`) are also stamped
 dirty, from analysis-only edits that were uncommitted while those trials
 started. The failure driver itself was committed at that SHA. The remaining
 10 trials and the 216-prefix matrix (5216974) are clean.
@@ -378,3 +379,41 @@ prefix-cache bug was diagnosable only because of that distinction.
   it doubles the node-hour cost of every matrix cell and the single-node
   4-replica fleet already satisfies the ">= 4 replicas" requirement. Recorded as
   an unmeasured absence, not estimated.
+
+---
+
+## 2026-09-17: history rewritten to drop two AI-attribution trailers
+
+Two early commits (`WIP: initial inference-router scaffold` and `WIP:
+inference-router progress before rate-limit interruption`) carried a
+`Co-Authored-By: Claude Opus 5` trailer, added in error against the workspace
+rule that forbids AI-attribution trailers. GitHub credits co-authors as
+contributors, so the published repository listed one.
+
+Removing a trailer rewrites the commit, and with it every descendant, so 29 of
+30 commits changed SHA. No content changed: `git diff` between the pre-rewrite
+and post-rewrite trees is empty, the commit count, subjects, author and
+committer identities and dates are unchanged, and all 30 commits are authored
+and committed by the repository owner.
+
+**This breaks a provenance link, and the mapping below is the repair.** Every
+artifact under `results/raw/` and `results/calibration/` records the `git_sha`
+it was produced at, and those are pre-rewrite SHAs. The artifacts are
+append-only and were *not* edited. To resolve one, map it here:
+
+| `git_sha` recorded in artifacts | commit after the rewrite | artifacts |
+|---|---|---|
+| `f0289c3a0b3e89d5ab0b0460088449f8928fc5c5-dirty` | `2525671bcee6d097dc6fde4d092fb49218f28b55` (plus uncommitted changes) | 265 |
+| `efe9130005e346179369992cbf01bbf8bd5c14a3` | `8881bc8485de65e959fa1d715dcd51355183e8a2` | 100 |
+| `c921ce89f398b320919bef280dfb969e353ca73b-dirty` | `e972a28e079c8a11f7b7e73a588f1d80977999c2` (plus uncommitted changes) | 10 |
+| `7782bbf5b9544461d3dea2ef9e60a65025aea809` | `75a541939d60991fdb3a34cbe51f32daeefc5cf4` | 6 |
+| `451d2a880735197e4c72259184ceee6b456204da-dirty` | `cd564e5432d6b9035322361bd2bba19d737a1efd` (plus uncommitted changes) | 2 |
+| `f0289c3a0b3e89d5ab0b0460088449f8928fc5c5` | `2525671bcee6d097dc6fde4d092fb49218f28b55` | 1 |
+
+The complete 30-commit mapping is in `docs/sha_map_2026-09-17.tsv`. A `-dirty`
+suffix means the tree carried uncommitted changes when the artifact was
+written; see the provenance note above for what those were in each case.
+
+No archive branch of the old history is published: leaving the original commits
+reachable on the remote would keep the co-author credited, which is the thing
+the rewrite exists to remove.
