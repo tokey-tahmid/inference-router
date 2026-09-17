@@ -1,10 +1,11 @@
-# PROGRESS — P3 `inference-router`
+# PROGRESS: P3 `inference-router`
 
-Last updated: 2026-09-15.
+Last updated: 2026-09-17.
 
 This file is the honest status of the project. Where something has not been
 measured it says **not measured**, and nothing here carries a number that does
-not trace to a committed artifact under `results/raw/`.
+not trace to a committed artifact under `results/raw/` or
+`results/calibration/`.
 
 ---
 
@@ -14,148 +15,67 @@ Checked against the PROJECT 3 "Definition of done" in the workspace `CLAUDE.md`.
 
 | requirement | status | evidence |
 |---|---|---|
-| All four policies measured against a live >=4-replica deployment with N>=3 | **NOT MET — not yet measured** | Matrix job staged as `slurm/run_full_experiment.sh` stage 5. `results/raw/` contains no matrix artifacts yet. |
-| SSE streaming verified non-buffering **under load** | **PARTIAL** | Verified deterministically against a mock upstream in `tests/streaming.rs` (5 tests). Against a **live vLLM replica**: not yet measured — staged as stage 1 of the full-experiment job. |
-| Prefix-affinity load-imbalance failure mode demonstrated with real data | **NOT MET — not yet measured** | Demonstrated in a unit test (`unbounded_affinity_ignores_load_completely`) but a unit test is not "real data". Requires the matrix. |
-| README states hardware, replica count, and topology | **MET** | `README.md` "Hardware" section names the node, GPU model, driver, NVLink topology, and the exact backend digest and model revision copied from P1's lockfile. |
-| Router binary, config file, clippy-clean, unit + integration tests | **MET (build), pending re-confirm** | Build job `5213920`: `cargo build --release --all-targets` and `cargo clippy --all-targets -- -D warnings` both clean; 64 of 66 unit tests passed. The 2 failures were wrong test expectations (documented in `docs/notes.md`), fixed, rebuild in flight as job `5214089`. |
-| Four routing policies behind a common trait | **MET** | `src/policy/mod.rs` defines `RoutingPolicy`; `round_robin`, `least_loaded`, `prefix_affinity`, `prefix_affinity_bounded` all implement it and are selectable at runtime via `POST /admin/policy`. |
-| Deployment: Slurm, replicas fanned out, topology documented | **MET** | `slurm/lib_replicas.sh` launches NUMA-pinned replicas; topology recorded into every artifact's `full_config_dict.fleet`. |
-| Kubernetes manifests | **DELIBERATELY ABSENT** | No Kubernetes cluster is available here, and the workspace spec says not to commit untested manifests. |
-| Failure-mode experiment (budget permitting) | **NOT MET — not yet measured** | `slurm/run_failure_mode.sh` is written and ready; not yet run. |
+| All four policies measured against a live >=4-replica deployment with N>=3 | **MET** | Job 5216059: 4 policies x 4 ratios x 4 calibrated rates x (3 reps + 1 warmup) = 256 phases, 4 vLLM replicas, run `4c21b52cf3d1432c`. Job 5216974: 4 policies x 2 ratios x 3 rates x 4 = 96 phases with 216 prefix groups, run `3623b8dbfa6443b1`. Every configuration has N=3 usable repetitions (`results/RESULTS.md` inventory). |
+| SSE streaming verified non-buffering under load | **MET** | Deterministic: `tests/streaming.rs`. Live gate, job 5216059 stage 1 (`results/raw/verify__ea06b12cf8ae4e58.json`): 32/32 requests, 130 chunks each, TTFT/e2e p50 0.048. Under matrix load: 130 chunks per request in every phase at every rate (figure `streaming_non_buffering.png`). |
+| Prefix-affinity load-imbalance failure mode demonstrated with real data | **MET** | Single-prefix matrix: plain affinity at ratio 0.9 puts 3.66-3.74x the mean load on one replica, doubles median TTFT at 16 req/s, and sheds 42% of requests at 48 req/s against round robin's 10%. The bounded policy holds peak/mean to 1.21-1.26 at 16-48 req/s. README "Results". |
+| README states hardware, replica count, and topology | **MET** | README "Hardware": node type, GPU, driver as recorded, NVLink mesh, 4 replicas one per GPU on one node, NUMA pinning, admission cap, backend digest and model revision. |
+| Router binary, config file, clippy-clean, unit + integration tests | **MET** | Build job 5215489 (rustc 1.98.1 via rustup): `cargo build --release`, `clippy -D warnings`, rustfmt check, all unit and integration tests pass. |
+| Four routing policies behind a common trait | **MET** | `src/policy/mod.rs` `RoutingPolicy`; selectable at runtime via `POST /admin/policy`. |
+| Deployment: Slurm, replicas fanned out, topology documented | **MET** | `slurm/lib_replicas.sh`; topology recorded in every artifact's `full_config_dict.fleet`. Single node; see "not done" below for multi-node. |
+| Kubernetes manifests | **DELIBERATELY ABSENT** | No Kubernetes cluster is available, and the spec says not to commit untested manifests. |
+| Failure-mode experiment (budget permitting) | **MET** | Job 5216528: 12 trials (4 policies x 3), replica SIGKILLed and relaunched under load; detection, readmission, error bursts and post-recovery share per policy. |
 
-**Summary: the router is built and tested; the measurements are not done.**
-That is the gap that matters, and it is stated plainly rather than dressed up.
-
----
-
-## What has actually been measured
-
-### Single-replica KV cache envelope (job `5213921`, arm A, on `mel2036`)
-
-> **Provenance caveat.** `sacct -j 5213921` reports **`TIMEOUT`** at `00:30:36`,
-> not `COMPLETED`, and a reader checking the job state deserves to know why the
-> numbers below are quoted anyway. The probe went to `qos=test` (30-minute
-> ceiling) and has three arms. **The figures below are printed by vLLM during
-> engine startup**, before any load is applied; arm A's replica was healthy at
-> 199 s and emitted its KV cache sizing then, and that output is complete in
-> `ir_density_5213921.out`. What the timeout truncated is **arm C** (four
-> replicas, one per GPU), which never ran at all, and the tail of arm B. It did
-> not interrupt or invalidate the arm-A measurement being quoted.
-
-One Qwen2.5-7B-Instruct replica, bf16, TP=1, `gpu_memory_utilization=0.90` on an
-A100-SXM4-40GB:
-
-| quantity | measured |
-|---|---|
-| available KV cache memory | 19.09 GiB |
-| GPU KV cache size | 357,520 tokens |
-| max concurrency at 4,096 tokens/request | 87.29x |
-| GPU memory used | 36,126 MiB of 40 GB |
-| cold start (weights from Lustre to healthy) | 199 s |
-
-### Two replicas per card: first attempt failed, and the attempt was flawed
-
-Job `5213921` arm B launched two replicas on GPU0 at
-`gpu_memory_utilization=0.47` each, 30 s apart. One came up; the other died:
-
-```
-ValueError: No available memory for the cache blocks.
-```
-
-That result is **not** usable as "two replicas do not fit", because the launches
-were 30 s apart against a ~200 s weight load, so both profiled free memory while
-the other was still allocating.
-
-The first rewrite was wrong too, in a different way: it kept the 0.90-util
-replica alive and started the "second" one at 0.45 alongside it. Arm A measured
-that replica occupying 36,126 MiB of 40 GB, so there was never room for a second
-15.2 GB weight load, and the probe could only have returned a foregone "no" that
-said nothing about the topology. Both flaws are fixed: the probe now tears down
-first and gives **both** replicas the same half-card budget, launched
-sequentially. **Re-measurement pending** as stage 2 of the full-experiment job.
-
-### Decision taken: density is reported separately, never pooled with the matrix
-
-The matrix stays on the **1-replica-per-card** fleet, and replica density is
-reported as its own capacity finding.
-
-The reason is that density constrains the **workload**, not merely the topology,
-and that is the non-obvious part. A solo replica has ~19 GB of KV cache
-(357,520 tokens, 87.29x concurrency at 4k). Two half-card replicas would have
-roughly 3 GB each after weights, an order of magnitude less. A fleet built that
-way cannot admit the same concurrency or the same context lengths at all, so the
-two topologies are not two ways of serving one workload; they are two different
-serving envelopes. A pooled figure would be comparing routing policies across
-configurations that differ in what they can physically admit.
-
-### Build and toolchain (jobs `5211435`-`5213920`)
-
-- MeluXina exposes exactly one Rust: `Rust/1.85.1-GCCcore-14.2.0`. `reqwest`'s
-  `url` -> `idna` -> `icu_*` chain now requires 1.88, so the build needs
-  `resolver = "3"` plus `rust-version = "1.85"` **and** a freshly generated
-  `Cargo.lock` (a stale lock silently defeats the MSRV-aware resolver).
-- `cargo clippy --all-targets --all-features -- -D warnings` is clean.
-
-Full detail and the reasoning behind each fix is in `docs/notes.md`.
+Replica density (spec: "measure, don't assume"): **measured**. Two 7B replicas
+fit on one 40 GB card at util 0.45 each, with a 24,608-token KV cache each
+(6.01x concurrency at 4,096 tokens) against 357,520 tokens (87.29x) for one
+replica at 0.90 (jobs 5216059 stage 2 and 5213921 arm A).
 
 ---
 
-## What is staged and ready to run
+## Findings in one paragraph each
 
-`slurm/run_full_experiment.sh` (job `5214090`, queued) runs five stages in one
-6-hour allocation:
+**Single hot prefix.** Round robin already reaches the no-eviction hit-rate
+bound, so prefix affinity gains nothing on cache and loses on balance. This
+contradicts the expected headline for this workload, and it is reported as such.
 
-1. **SSE non-buffering gate** against one live vLLM replica. Hard gate: the job
-   exits if it fails, because a buffering proxy produces a complete-looking but
-   meaningless dataset.
-2. **Replica density**, sequential, both replicas at half the card.
-3. **Four replicas**, one per GPU, NUMA-pinned.
-4. **Rate calibration** against that fleet, with the knee located from two
-   independent signals and reported honestly if no rate saturates.
-5. **The matrix**: 4 policies x 4 sharing ratios x the calibrated rates x N=3,
-   plus a warmup repetition per configuration that is recorded and excluded.
+**Tenant mix (216 prefixes).** Affinity reaches the bound (0.338 against 0.144
+for round robin at ratio 0.9) with even load, and cuts median TTFT by 25% at
+8 req/s. At 32 req/s the latency advantage is gone (1.35x round robin).
 
-Then `sbatch slurm/run_analysis.sh` regenerates every figure and table, and
-`slurm/run_failure_mode.sh` runs the kill-a-replica experiment.
+**Failure.** Detection 0.70-1.52 s with 500 ms health checks and a threshold of
+two; no failures after ejection or after readmission in any trial; readmission
+109.8-119.4 s after the relaunch, dominated by vLLM cold start.
 
-### If time runs short
+---
 
-The driver takes a `--budget-s` and stops cleanly between phases rather than
-being SIGKILLed mid-write, so a partial matrix is a set of complete artifacts
-rather than a truncated one. The matrix is ordered policy-outermost, so an early
-stop loses whole policies rather than corrupting every cell. If the budget will
-not cover the full matrix, the **rate axis** is what should be cut: the
-policy-by-sharing-ratio interaction is the headline, and all four policies at
-all four ratios matter more than four rate points.
+## Caveats that apply to the numbers
+
+- Client dispatch lag: most phases exceed the generator's own 0.25 s tolerance
+  on more than 2% of requests. They are kept and flagged, and TTFT from actual
+  dispatch is reported alongside (`analysis/load.py` docstring). The median
+  TTFTs quoted barely change between the two clocks.
+- Past the saturation point, latency describes admitted requests only.
+- Absolute latencies are co-located-fleet numbers (P1 job 5162712).
+- `-dirty` stamps: every job-5216059 artifact except the stage-1 verify
+  artifact (265 files), caused only by the job's own untracked output files
+  (since fixed in `provenance.git_sha`); 2 of the 12 failure trials in 5216528,
+  from uncommitted analysis-only edits. The driver code that ran is the
+  recorded SHA in both cases. The 216-prefix matrix (5216974) and the other 10
+  failure trials are clean. The superseded job 5215612 is dirty throughout.
+  See `docs/notes.md`.
 
 ---
 
 ## Things deliberately not done, and why
 
-- **Multi-node (8 replicas across 2 nodes).** The more interesting topology for
-  routing, because network latency becomes visible in the results. It doubles
-  the node-hour cost of every matrix cell, and a single-node 4-replica fleet
-  already satisfies the ">= 4 replicas" requirement. Recorded as an unmeasured
-  absence; not estimated.
-- **Kubernetes manifests with an HPA.** No cluster to run them on.
-- **SGLang as a second backend.** Out of scope for P3; the router is
-  backend-agnostic in that it speaks the OpenAI API, but this has only been
-  exercised against vLLM 0.27.1.
-
-## Open questions for a human
-
-- **Is a 2-replicas-per-card topology worth measuring as a second arm?** If the
-  sequential probe shows it works, each replica would have roughly 3 GB of KV
-  cache against the 19 GB a solo replica gets. That is a small enough envelope
-  that it changes the *workload* the replicas can serve, not just the topology,
-  so the two configurations should probably not be pooled in one figure. My
-  inclination is to report it as a capacity finding and keep the matrix on the
-  1-per-card fleet, but it is a judgement call about what the portfolio should
-  show.
-- **Absolute latencies here are fleet numbers, not isolated-replica numbers.**
-  P1 job `5162712` measured co-location alone costing +150.7% TTFT p50 and
-  -34.1% throughput. The policy comparison is unaffected (every policy runs
-  against the same co-located fleet in the same job), but any absolute figure
-  quoted from this project needs that caveat attached, and the README carries
-  it.
+- **Multi-node (8 replicas across 2 nodes).** Would make network latency
+  visible in routing, at double the node cost per phase. A single-node
+  4-replica fleet satisfies ">= 4 replicas". Not measured, not estimated.
+- **A matrix on the 2-per-card topology.** Its KV envelope is about 14.5x
+  smaller per replica, so it serves a different workload; pooling it with the
+  1-per-card matrix would confound policy with capacity.
+- **Root-causing the client dispatch lag.** The generator and router run
+  unpinned on the same node as four pinned replicas. Pinning them to free cores
+  is the obvious next step; it was not needed to reach the conclusions above.
+- **SGLang behind the router.** The router speaks the OpenAI API but has only
+  been exercised against vLLM 0.27.1.

@@ -287,6 +287,11 @@ job: `git status --porcelain` counted the job's own untracked result files.
 The artifacts stay as written (append-only); the code at that SHA is exactly
 what ran. `provenance.git_sha` now passes `--untracked-files=no`.
 
+Two later failure-mode trials (job 5216528, SHA `451d2a88`) are also stamped
+dirty, from analysis-only edits that were uncommitted while those trials
+started. The failure driver itself was committed at that SHA. The remaining
+10 trials and the 216-prefix matrix (5216974) are clean.
+
 ---
 
 ## Design decisions recorded here because they are not obvious from the code
