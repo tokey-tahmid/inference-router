@@ -2,7 +2,7 @@
 
 A prefix-aware request router, in Rust, in front of a fleet of LLM inference
 replicas, and a measurement harness that compares four routing policies under
-controlled load on real A100 hardware.
+controlled load on real A100 hardware at ICHEC.
 
 > **Status: measured.** Four routing policies against a live 4-replica vLLM
 > fleet, N=3, in two workload shapes (256 + 96 phases), plus 12 replica
