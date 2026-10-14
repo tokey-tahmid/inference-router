@@ -2,7 +2,7 @@
 
 A prefix-aware request router, in Rust, in front of a fleet of LLM inference
 replicas, and a measurement harness that compares four routing policies under
-controlled load on real A100 hardware at ICHEC.
+controlled load on real A100 hardware.
 
 > **Status: measured.** Four routing policies against a live 4-replica vLLM
 > fleet, N=3, in two workload shapes (256 + 96 phases), plus 12 replica
@@ -213,8 +213,8 @@ of the tiebreak. `src/policy/least_loaded.rs` has a regression test for it.
 
 ## Running it
 
-Everything runs as a Slurm batch job on the `gpu` partition under account
-`p201466`. The login node has no `module`, no `cargo` and only Python 3.6, so a
+Everything runs as a Slurm batch job on the cluster's `gpu` partition. The
+login node has no `module`, no `cargo` and only Python 3.6, so a
 batch job is the first opportunity to compile or run anything.
 
 ```bash
@@ -243,7 +243,7 @@ quantity, not a guess.
 
 ## Hardware
 
-MeluXina, partition `gpu`. Per node: 4x NVIDIA A100-SXM4-40GB, 128 logical cores
+An HPC cluster's `gpu` partition. Per node: 4x NVIDIA A100-SXM4-40GB, 128 logical cores
 (4 sockets x 16 c x 2 t), 480 GB RAM, diskless. The experiment nodes reported
 driver 595.91.07 (recorded in every artifact).
 

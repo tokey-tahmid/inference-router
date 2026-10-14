@@ -7,7 +7,7 @@
 # Compute is billed to p201466 (GPU headroom, no CPU allocation at all, so every
 # job -- including a pure `cargo build` that needs no GPU -- runs on the `gpu`
 # partition). Storage stays under p201362; filesystem access follows unix group
-# membership, not the Slurm account. See ../CLAUDE.md.
+# membership, not the Slurm account. See the workspace spec.
 export IR_ACCOUNT="p201466"
 
 IR_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

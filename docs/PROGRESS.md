@@ -11,7 +11,7 @@ not trace to a committed artifact under `results/raw/` or
 
 ## Definition-of-done audit
 
-Checked against the PROJECT 3 "Definition of done" in the workspace `CLAUDE.md`.
+Checked against the PROJECT 3 "Definition of done" in the workspace spec.
 
 | requirement | status | evidence |
 |---|---|---|

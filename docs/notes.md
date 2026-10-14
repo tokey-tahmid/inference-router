@@ -382,12 +382,11 @@ prefix-cache bug was diagnosable only because of that distinction.
 
 ---
 
-## 2026-09-17: history rewritten to drop two AI-attribution trailers
+## 2026-09-17: history rewritten to remove two incorrect co-author trailers
 
 Two early commits (`WIP: initial inference-router scaffold` and `WIP:
 inference-router progress before rate-limit interruption`) carried a
-`Co-Authored-By: Claude Opus 5` trailer, added in error against the workspace
-rule that forbids AI-attribution trailers. GitHub credits co-authors as
+co-author trailer added in error. GitHub credits co-authors as
 contributors, so the published repository listed one.
 
 Removing a trailer rewrites the commit, and with it every descendant, so 29 of

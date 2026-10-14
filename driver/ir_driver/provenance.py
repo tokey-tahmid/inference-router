@@ -1,6 +1,6 @@
 """Provenance capture for every raw artifact.
 
-Rule 2 of the workspace CLAUDE.md: every result carries provenance. The fields
+Rule 2 of the workspace spec: every result carries provenance. The fields
 below are the ones that file names, plus the router- and topology-specific ones
 this project adds.
 
