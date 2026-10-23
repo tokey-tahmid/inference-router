@@ -220,7 +220,9 @@ async fn dispatch(
         otel.status_code = tracing::field::Empty,
     );
     if telemetry::enabled() {
-        let _ = span.set_parent(telemetry::parent_from(&headers));
+        if let Err(e) = span.set_parent(telemetry::parent_from(&headers)) {
+            tracing::warn!(error = ?e, "trace_parent_not_set");
+        }
     }
     let failed = |e: RouterError| {
         span.record("otel.status_code", "ERROR");

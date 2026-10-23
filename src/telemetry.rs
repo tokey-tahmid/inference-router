@@ -22,7 +22,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use axum::http::{HeaderMap, HeaderName};
-use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
