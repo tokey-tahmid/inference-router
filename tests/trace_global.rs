@@ -1,12 +1,16 @@
 //! The same check as `trace_on.rs`, but through `telemetry::init`, the global
 //! subscriber and a multi-threaded runtime: the configuration the binary runs in.
 //! (The OTLP endpoint is a closed port; exporting fails quietly, which is fine here.)
+//!
+//! The caller's flags are `03`, as OpenTelemetry Python 1.45 sends them (sampled plus
+//! the W3C Level 2 "random" bit). opentelemetry_sdk 0.31 rejected these and started a
+//! new trace, which the unit tests with `01` could not catch.
 
 mod common;
 
 use common::{config_for, spawn_router, MockReplica};
 
-const CALLER: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+const CALLER: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-03";
 
 #[test]
 fn the_callers_trace_continues_with_the_binarys_own_setup() {

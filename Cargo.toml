@@ -51,12 +51,16 @@ anyhow = "1"
 parking_lot = "0.12"
 http = "1"
 # OpenTelemetry tracing (off unless --otlp-endpoint is set; see src/telemetry.rs).
-# These four move in lockstep: tracing-opentelemetry 0.32 targets opentelemetry 0.31.
-opentelemetry = "0.31"
-opentelemetry_sdk = "0.31"
-opentelemetry-otlp = { version = "0.31", default-features = false, features = ["trace", "http-proto", "reqwest-blocking-client"] }
-opentelemetry-http = "0.31"
-tracing-opentelemetry = "0.32"
+# These move in lockstep: tracing-opentelemetry 0.33 targets opentelemetry 0.32.
+# 0.32 is the floor: opentelemetry_sdk 0.31 rejects any version-00 traceparent whose
+# flags exceed 02, so a caller using OpenTelemetry Python 1.45 (which also sets the W3C
+# Level 2 "random" bit, flags 03) silently started a new trace here. tests/trace_global.rs
+# sends exactly such a header.
+opentelemetry = "0.32"
+opentelemetry_sdk = "0.32"
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "http-proto", "reqwest-blocking-client"] }
+opentelemetry-http = "0.32"
+tracing-opentelemetry = "0.33"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
