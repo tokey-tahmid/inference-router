@@ -73,8 +73,7 @@ pub fn init(
     otlp_endpoint: Option<&str>,
     service_name: &str,
 ) -> anyhow::Result<Telemetry> {
-    let filter =
-        EnvFilter::try_from_env("ROUTER_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_from_env("ROUTER_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
     let fmt_layer = if log_json {
         fmt::layer().json().with_current_span(false).boxed()
     } else {
