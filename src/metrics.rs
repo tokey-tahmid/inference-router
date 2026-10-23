@@ -27,9 +27,12 @@ use crate::replica::Fleet;
 /// Covers a ~20 ms cached prefill through a ~120 s saturated long generation.
 /// The bottom bucket is below the fastest TTFT P1 measured (20.7 ms at 128
 /// input tokens) so the low end is resolved rather than collapsed.
-pub const LATENCY_BUCKETS: [f64; 16] = [
-    0.005, 0.010, 0.025, 0.050, 0.075, 0.100, 0.250, 0.500, 0.750, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0,
-    120.0,
+///
+/// 2.0 s is a bucket boundary so that a "first token within 2 s" service-level
+/// objective can be computed exactly from the histogram, without interpolating.
+pub const LATENCY_BUCKETS: [f64; 17] = [
+    0.005, 0.010, 0.025, 0.050, 0.075, 0.100, 0.250, 0.500, 0.750, 1.0, 2.0, 2.5, 5.0, 10.0, 30.0,
+    60.0, 120.0,
 ];
 
 #[derive(Debug, Default)]
