@@ -239,6 +239,14 @@ rate ladder. The rate
 axis has to span underload to overload *for this fleet*, and that is a measured
 quantity, not a guess.
 
+### Tracing with OpenTelemetry
+
+The router can export a trace for every request it proxies. Tracing is off by default, so the router behaves and performs exactly as it did for the results below. It switches on when `--otlp-endpoint` (or `ROUTER_OTLP_ENDPOINT`) points at an OTLP/HTTP collector, for example `http://127.0.0.1:4318/v1/traces`, and `--service-name` keeps several routers apart.
+
+With tracing on, every request gets a `router.request` span, which stays open until the last byte of the response reaches the client. As a result, its duration is the end-to-end latency that the router observes, and it records the chosen replica, the policy, the reason for the route, the admission wait and the time to the first byte. Child spans cover the admission queue and the round trip to the replica up to its response headers. In addition, the router continues the caller's W3C trace when the request carries a `traceparent` header, and it passes its own context on to the replica. That way, a load generator's span, the router's span and vLLM's own request span (from `vllm serve --otlp-traces-endpoint`) all land in one trace. With tracing off, the caller's `traceparent` and `tracestate` headers are still forwarded unchanged, so the replica can join a client's trace anyway.
+
+One interoperability detail is worth knowing about. OpenTelemetry Python 1.45 sends `traceparent` flags of `03`, which means sampled plus the "random" bit from W3C Trace Context Level 2, and opentelemetry_sdk 0.31 for Rust rejected any such header without an error, so every request silently started a new trace. The router therefore requires opentelemetry 0.32 or newer, and `tests/trace_global.rs` sends exactly that header through the binary's own telemetry setup, so the problem can't come back unnoticed.
+
 ---
 
 ## Hardware
