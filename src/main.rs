@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use clap::Parser;
 use inference_router::config::{Config, PolicyKind};
 use inference_router::state::AppState;
-use inference_router::{app, health};
+use inference_router::{app, health, telemetry};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -40,24 +40,36 @@ struct Cli {
     /// into one.
     #[arg(long)]
     check: bool,
+
+    /// OTLP/HTTP endpoint for OpenTelemetry traces, used as given, for example
+    /// `http://127.0.0.1:4318/v1/traces`. Tracing is off when this is unset.
+    #[arg(long, env = "ROUTER_OTLP_ENDPOINT")]
+    otlp_endpoint: Option<String>,
+
+    /// `service.name` on exported spans, so traces from several routers stay apart.
+    #[arg(long, env = "ROUTER_SERVICE_NAME", default_value = "inference-router")]
+    service_name: String,
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+// Telemetry is set up before the async runtime starts and shut down after it
+// stops: the OTLP/HTTP exporter uses a blocking client, which must not be
+// created or dropped inside an async context.
+fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let telemetry = telemetry::init(
+        cli.log_json,
+        cli.otlp_endpoint.as_deref(),
+        &cli.service_name,
+    )?;
+    let result = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run(cli));
+    telemetry.shutdown();
+    result
+}
 
-    let filter = tracing_subscriber::EnvFilter::try_from_env("ROUTER_LOG")
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    if cli.log_json {
-        tracing_subscriber::fmt()
-            .json()
-            .with_env_filter(filter)
-            .with_current_span(false)
-            .init();
-    } else {
-        tracing_subscriber::fmt().with_env_filter(filter).init();
-    }
-
+async fn run(cli: Cli) -> anyhow::Result<()> {
     let mut config = Config::load(&cli.config)?;
     if let Some(listen) = cli.listen {
         config.listen = listen.parse()?;

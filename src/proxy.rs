@@ -57,6 +57,8 @@ use axum::extract::State;
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures_util::Stream;
+use tracing::Instrument;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::admission::AdmissionGuard;
 use crate::error::{Result, RouterError};
@@ -64,6 +66,7 @@ use crate::metrics::SharedMetrics;
 use crate::policy::AffinityKey;
 use crate::replica::{InflightGuard, Replica};
 use crate::state::SharedState;
+use crate::telemetry;
 
 /// Headers that must not be copied verbatim onto a re-framed response.
 const HOP_BY_HOP: [&str; 8] = [
@@ -201,6 +204,29 @@ async fn dispatch(
     let m = Arc::clone(&state.metrics);
     m.requests_total.fetch_add(1, Ordering::Relaxed);
 
+    // One span per request, open until the last byte reaches the client (it is
+    // moved into the relayed stream's state below). See src/telemetry.rs.
+    let span = tracing::info_span!(
+        "router.request",
+        otel.kind = "server",
+        http.route = path,
+        router.replica = tracing::field::Empty,
+        router.policy = tracing::field::Empty,
+        router.route_reason = tracing::field::Empty,
+        router.queue_wait_us = tracing::field::Empty,
+        router.ttfb_ms = tracing::field::Empty,
+        router.chunks = tracing::field::Empty,
+        http.response.status_code = tracing::field::Empty,
+        otel.status_code = tracing::field::Empty,
+    );
+    if telemetry::enabled() {
+        let _ = span.set_parent(telemetry::parent_from(&headers));
+    }
+    let failed = |e: RouterError| {
+        span.record("otel.status_code", "ERROR");
+        e
+    };
+
     let parsed: serde_json::Value = serde_json::from_slice(&body)
         .map_err(|e| RouterError::BadRequest(format!("body is not JSON: {e}")))?;
 
@@ -226,14 +252,27 @@ async fn dispatch(
     if n_healthy == 0 {
         return Err(RouterError::NoHealthyReplica);
     }
-    let admission: AdmissionGuard = state.admission.acquire(n_healthy).await?;
+    let admission: AdmissionGuard = state
+        .admission
+        .acquire(n_healthy)
+        .instrument(tracing::info_span!(parent: &span, "router.admission"))
+        .await
+        .map_err(failed)?;
     m.queue_wait.observe(admission.queue_wait.as_secs_f64());
 
     let decision = policy
         .select(&state.fleet, key)
-        .ok_or(RouterError::NoHealthyReplica)?;
+        .ok_or(RouterError::NoHealthyReplica)
+        .map_err(failed)?;
     let replica = Arc::clone(state.fleet.get(decision.replica_index));
     m.record_route(decision.replica_index, decision.reason);
+    span.record("router.replica", replica.id.as_str());
+    span.record("router.policy", policy.kind().as_str());
+    span.record("router.route_reason", decision.reason.as_str());
+    span.record(
+        "router.queue_wait_us",
+        admission.queue_wait.as_micros() as u64,
+    );
 
     // Acquired before the request is sent and released when the response stream
     // is dropped. See the module docs.
@@ -244,22 +283,35 @@ async fn dispatch(
         .http
         .post(&url)
         .header(header::CONTENT_TYPE, "application/json")
-        .body(body);
+        .body(body)
+        .headers(telemetry::outgoing_headers(&span, &headers));
     // Pass the caller's authorization through untouched; vLLM may be running
     // with an API key and the router is not the place to mint or strip one.
     if let Some(auth) = headers.get(header::AUTHORIZATION) {
         req = req.header(header::AUTHORIZATION, auth.clone());
     }
 
-    let upstream = req.send().await.map_err(|source| {
-        replica.note_upstream_error();
-        RouterError::Upstream {
-            replica: replica.id.clone(),
-            source,
-        }
-    })?;
+    let upstream = req
+        .send()
+        .instrument(tracing::info_span!(
+            parent: &span,
+            "router.upstream_headers",
+            router.replica = %replica.id
+        ))
+        .await
+        .map_err(|source| {
+            replica.note_upstream_error();
+            failed(RouterError::Upstream {
+                replica: replica.id.clone(),
+                source,
+            })
+        })?;
 
     let status = upstream.status();
+    span.record("http.response.status_code", status.as_u16());
+    if !status.is_success() {
+        span.record("otel.status_code", "ERROR");
+    }
     if status.is_success() {
         m.responses_ok_total.fetch_add(1, Ordering::Relaxed);
     } else {
@@ -327,6 +379,7 @@ async fn dispatch(
             completed: false,
             chunks: 0,
             bytes: 0,
+            span,
         },
     };
 
@@ -359,10 +412,13 @@ struct RelayState {
     completed: bool,
     chunks: u64,
     bytes: u64,
+    /// The request's span; it ends when this state is dropped, after the last byte.
+    span: tracing::Span,
 }
 
 impl Drop for RelayState {
     fn drop(&mut self) {
+        self.span.record("router.chunks", self.chunks);
         let e2e = self.start.elapsed().as_secs_f64();
         self.metrics.e2e.observe(e2e);
         self.metrics
@@ -415,6 +471,7 @@ where
                     this.state
                         .metrics
                         .record_ttft(this.state.replica.index, ttft);
+                    this.state.span.record("router.ttfb_ms", ttft * 1e3);
                 }
                 this.state.chunks += 1;
                 this.state.bytes += chunk.len() as u64;

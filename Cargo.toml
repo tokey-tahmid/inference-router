@@ -50,6 +50,13 @@ thiserror = "2"
 anyhow = "1"
 parking_lot = "0.12"
 http = "1"
+# OpenTelemetry tracing (off unless --otlp-endpoint is set; see src/telemetry.rs).
+# These four move in lockstep: tracing-opentelemetry 0.32 targets opentelemetry 0.31.
+opentelemetry = "0.31"
+opentelemetry_sdk = "0.31"
+opentelemetry-otlp = { version = "0.31", default-features = false, features = ["trace", "http-proto", "reqwest-blocking-client"] }
+opentelemetry-http = "0.31"
+tracing-opentelemetry = "0.32"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

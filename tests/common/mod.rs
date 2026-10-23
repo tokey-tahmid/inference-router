@@ -41,6 +41,8 @@ pub struct MockReplica {
     /// Milliseconds between subsequent chunks (mock decode).
     pub inter_chunk_delay_ms: Arc<AtomicU64>,
     pub chunks: Arc<AtomicU64>,
+    /// The `traceparent` header of the most recent completion request, if any.
+    pub traceparent: Arc<parking_lot::Mutex<Option<String>>>,
 }
 
 #[derive(Clone)]
@@ -51,6 +53,7 @@ struct MockState {
     first_chunk_delay_ms: Arc<AtomicU64>,
     inter_chunk_delay_ms: Arc<AtomicU64>,
     chunks: Arc<AtomicU64>,
+    traceparent: Arc<parking_lot::Mutex<Option<String>>>,
     id: String,
 }
 
@@ -62,6 +65,7 @@ impl MockReplica {
         let first_chunk_delay_ms = Arc::new(AtomicU64::new(0));
         let inter_chunk_delay_ms = Arc::new(AtomicU64::new(0));
         let chunks = Arc::new(AtomicU64::new(4));
+        let traceparent = Arc::new(parking_lot::Mutex::new(None));
 
         let st = MockState {
             healthy: healthy.clone(),
@@ -70,6 +74,7 @@ impl MockReplica {
             first_chunk_delay_ms: first_chunk_delay_ms.clone(),
             inter_chunk_delay_ms: inter_chunk_delay_ms.clone(),
             chunks: chunks.clone(),
+            traceparent: traceparent.clone(),
             id: id.to_string(),
         };
 
@@ -94,7 +99,12 @@ impl MockReplica {
             first_chunk_delay_ms,
             inter_chunk_delay_ms,
             chunks,
+            traceparent,
         }
+    }
+
+    pub fn last_traceparent(&self) -> Option<String> {
+        self.traceparent.lock().clone()
     }
 
     pub fn url(&self) -> String {
@@ -130,8 +140,16 @@ async fn health(State(st): State<MockState>) -> Response {
     }
 }
 
-async fn complete(State(st): State<MockState>, _body: Bytes) -> Response {
+async fn complete(
+    State(st): State<MockState>,
+    headers: axum::http::HeaderMap,
+    _body: Bytes,
+) -> Response {
     st.requests.fetch_add(1, Ordering::Relaxed);
+    *st.traceparent.lock() = headers
+        .get("traceparent")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
     if st.failing.load(Ordering::Relaxed) {
         return (StatusCode::INTERNAL_SERVER_ERROR, "boom").into_response();
     }

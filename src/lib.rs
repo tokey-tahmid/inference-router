@@ -13,6 +13,7 @@ pub mod policy;
 pub mod proxy;
 pub mod replica;
 pub mod state;
+pub mod telemetry;
 
 use axum::extract::State;
 use axum::routing::{get, post};
