@@ -3,8 +3,8 @@
 #
 #   sbatch slurm/probe_replica_density.sh
 #
-# The workspace spec says "determine empirically whether two replicas fit per
-# card or one -- measure, don't assume". The arithmetic says 7B bf16 is ~15.2 GB
+# The question is whether two replicas fit per card or one, and it has to be
+# determined empirically: measure, don't assume. The arithmetic says 7B bf16 is ~15.2 GB
 # of weights, so two on a 40 GB card leaves ~9.6 GB of KV cache between them at
 # gpu_memory_utilization 0.47. Whether that is enough to *serve* is a different
 # question from whether it *loads*, so this probe records the number of KV cache
@@ -15,14 +15,13 @@
 # matrix to a topology that turns out to thrash.
 #
 #SBATCH --job-name=ir-density
-#SBATCH --account=p201466
 #SBATCH --partition=gpu
 #SBATCH --qos=test
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=128
 #SBATCH --time=00:30:00
-#SBATCH --output=/mnt/tier2/project/p201362/ttahmid/inference-work/logs/ir_density_%j.out
+#SBATCH --output=logs/ir_density_%j.out
 
 set -uo pipefail
 
@@ -34,8 +33,7 @@ fi
 
 find_repo() {
     local c
-    for c in "${IR_REPO:-}" "${SLURM_SUBMIT_DIR:-}" \
-             "/home/users/u104240/apps/inference-work/inference-router"; do
+    for c in "${IR_REPO:-}" "${SLURM_SUBMIT_DIR:-}"; do
         if [[ -n "$c" && -f "${c}/env.sh" ]]; then printf '%s' "$c"; return 0; fi
     done
     return 1
@@ -47,8 +45,7 @@ source "${HERE}/env.sh"
 source "${HERE}/slurm/lib_replicas.sh"
 
 export IR_TAG="density"
-module load "$IR_MOD_ENV"
-module load "$IR_MOD_APPTAINER"
+ir_load_modules
 
 ir_log "host=$(hostname) job=${SLURM_JOB_ID}"
 nvidia-smi --query-gpu=index,name,memory.total,driver_version --format=csv,noheader

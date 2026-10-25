@@ -17,7 +17,7 @@
     ]
   },
   "git_sha": "f0289c3a0b3e89d5ab0b0460088449f8928fc5c5-dirty",
-  "hostname": "mel2187",
+  "hostname": "node2187",
   "kind": "replica_density_probe",
   "model_id": "Qwen/Qwen2.5-7B-Instruct",
   "model_revision": "a09a35458c702b33eeacc393d103063234e8bc28",

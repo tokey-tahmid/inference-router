@@ -25,14 +25,13 @@
 # the fleet to drain, and records whether both actually happened.
 #
 #SBATCH --job-name=ir-matrix
-#SBATCH --account=p201466
 #SBATCH --partition=gpu
 #SBATCH --qos=short
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=128
 #SBATCH --time=06:00:00
-#SBATCH --output=/mnt/tier2/project/p201362/ttahmid/inference-work/logs/ir_matrix_%j.out
+#SBATCH --output=logs/ir_matrix_%j.out
 
 set -uo pipefail
 
@@ -44,8 +43,7 @@ fi
 
 find_repo() {
     local c
-    for c in "${IR_REPO:-}" "${SLURM_SUBMIT_DIR:-}" \
-             "/home/users/u104240/apps/inference-work/inference-router"; do
+    for c in "${IR_REPO:-}" "${SLURM_SUBMIT_DIR:-}"; do
         if [[ -n "$c" && -f "${c}/env.sh" ]]; then printf '%s' "$c"; return 0; fi
     done
     return 1
@@ -57,8 +55,7 @@ source "${HERE}/env.sh"
 source "${HERE}/slurm/lib_replicas.sh"
 
 export IR_TAG="matrix"
-module load "$IR_MOD_ENV"
-module load "$IR_MOD_APPTAINER"
+ir_load_modules
 
 NREPLICAS="${IR_NREPLICAS:-4}"
 RATES_DEFAULT="${IR_RATES:-}"
@@ -165,7 +162,7 @@ PYTHONPATH="${HERE}/driver" "${IR_VENV}/bin/python" -m ir_driver.cli matrix \
     --replicas-per-gpu 1 \
     --gpus-used 4 \
     --nodes-used 1 \
-    --topology-note "4x A100-SXM4-40GB on ${NODE}, one TP=1 replica per GPU, each pinned to its NUMA-local cores; full NVLink NV4 mesh; replicas co-located on one node (P1 measured co-location alone costs +150% TTFT p50 / -34% throughput vs isolation, so absolute numbers here are fleet numbers, not isolated-replica numbers)" \
+    --topology-note "4x A100-SXM4-40GB on ${NODE}, one TP=1 replica per GPU, each pinned to its NUMA-local cores; full NVLink NV4 mesh; replicas co-located on one node" \
     --budget-s "$BUDGET" \
     "${RATE_ARGS[@]}"
 RC=$?

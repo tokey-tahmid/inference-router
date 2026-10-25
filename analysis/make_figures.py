@@ -6,7 +6,7 @@ Reads raw artifacts only. Writes results/figures/ and results/RESULTS.md.
 Nothing here transcribes a number: if a value is not in an artifact, the figure
 shows a gap rather than an estimate.
 
-Plot conventions (workspace spec): 300 dpi, axis units labelled, hardware
+Plot conventions (see the README): 300 dpi, axis units labelled, hardware
 and replica topology in the caption, N and spread shown, median with min/max
 rather than a bare mean.
 """

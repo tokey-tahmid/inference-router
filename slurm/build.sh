@@ -4,20 +4,19 @@
 #   sbatch slurm/build.sh
 #
 # This runs on the `gpu` partition and uses no GPU. That is not a mistake: the
-# p201466 account has no CPU allocation at all (gres/cpun=0) and every `cpu`
-# QOS carries DenyOnLimit, so a cpu submission is rejected outright. The login
+# allocation it ran under had no CPU hours at all, so a cpu submission was
+# rejected outright. The login
 # node has no `module` and no `cargo`, so a batch job is the *first* opportunity
 # to compile anything at all.
 #
 #SBATCH --job-name=ir-build
-#SBATCH --account=p201466
 #SBATCH --partition=gpu
 #SBATCH --qos=test
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
 #SBATCH --time=00:30:00
-#SBATCH --output=/mnt/tier2/project/p201362/ttahmid/inference-work/logs/ir_build_%j.out
+#SBATCH --output=logs/ir_build_%j.out
 
 set -euo pipefail
 
@@ -29,14 +28,13 @@ fi
 
 find_repo() {
     local c
-    for c in "${IR_REPO:-}" "${SLURM_SUBMIT_DIR:-}" \
-             "/home/users/u104240/apps/inference-work/inference-router"; do
+    for c in "${IR_REPO:-}" "${SLURM_SUBMIT_DIR:-}"; do
         if [[ -n "$c" && -f "${c}/env.sh" ]]; then printf '%s' "$c"; return 0; fi
     done
     return 1
 }
-# BASH_SOURCE points at psslurm's spool copy of this script, not at the repo,
-# so the repo has to be found via SLURM_SUBMIT_DIR or an explicit path.
+# BASH_SOURCE points at Slurm's spool copy of this script, not at the repo,
+# so the repo has to be found via SLURM_SUBMIT_DIR.
 HERE="$(find_repo)" || { echo "cannot locate repo root" >&2; exit 1; }
 # shellcheck disable=SC1091
 source "${HERE}/env.sh"
@@ -45,11 +43,11 @@ log() { printf '[build %s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 
 log "host=$(hostname) job=${SLURM_JOB_ID} repo=${HERE}"
 
-module load "$IR_MOD_ENV"
+ir_load_modules
 
 # Toolchain: rustup-managed stable, installed into project storage.
 #
-# MeluXina exposes exactly one Rust module, 1.85.1, and the dependency tree has
+# The cluster exposes exactly one Rust module, 1.85.1, and the dependency tree has
 # outgrown it: reqwest -> url -> idna -> icu_* now reaches `yoke-derive`, which
 # calls `str::from_utf8` as an inherent associated function, and that needs a
 # newer compiler (build 5214119: error[E0599] in yoke-derive).

@@ -1,11 +1,11 @@
 """Choose the matrix's request-rate ladder from a measured calibration sweep.
 
 The matrix asks for "4 rate points spanning underload to overload". That is only
-meaningful relative to a *measured* saturation point, and guessing it would be
-wrong here in a knowable direction: P1 measured that co-locating four
-single-GPU replicas costs -34% throughput versus isolation, so a ladder derived
-from isolated-replica throughput would place every "overload" point inside the
-stable region and the matrix would compare four policies that never contend.
+meaningful relative to a *measured* saturation point of this fleet, with the
+router in front of it, rather than one guessed from a single replica. (An
+earlier version of this docstring also cited P1's measured co-location cost of
+-34% throughput. That finding was withdrawn on 2026-10-24, because its four
+replicas shared one port; measuring the knee on the real fleet still stands.)
 
 Saturation is located from the SERVER's behaviour, by the first rate where
 

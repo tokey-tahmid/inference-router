@@ -6,7 +6,7 @@ description = "Prefix-aware request router for LLM inference replica fleets"
 license = "MIT"
 # No `rust-version` is declared, deliberately.
 #
-# An earlier revision declared 1.85 (MeluXina's only Rust module; `module -t
+# An earlier revision declared 1.85 (the cluster's only Rust module; `module -t
 # avail Rust` in job 5211438 lists no other) and relied on `resolver = "3"`, the
 # MSRV-aware resolver, to pick dependency versions that still build on it. That
 # could not be made airtight: the resolver can only honour the `rust-version`

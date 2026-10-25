@@ -17,14 +17,13 @@
 # precisely so the two clocks are comparable.
 #
 #SBATCH --job-name=ir-failure
-#SBATCH --account=p201466
 #SBATCH --partition=gpu
 #SBATCH --qos=short
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=128
 #SBATCH --time=04:00:00
-#SBATCH --output=/mnt/tier2/project/p201362/ttahmid/inference-work/logs/ir_failure_%j.out
+#SBATCH --output=logs/ir_failure_%j.out
 
 set -uo pipefail
 
@@ -36,8 +35,7 @@ fi
 
 find_repo() {
     local c
-    for c in "${IR_REPO:-}" "${SLURM_SUBMIT_DIR:-}" \
-             "/home/users/u104240/apps/inference-work/inference-router"; do
+    for c in "${IR_REPO:-}" "${SLURM_SUBMIT_DIR:-}"; do
         if [[ -n "$c" && -f "${c}/env.sh" ]]; then printf '%s' "$c"; return 0; fi
     done
     return 1
@@ -49,8 +47,7 @@ source "${HERE}/env.sh"
 source "${HERE}/slurm/lib_replicas.sh"
 
 export IR_TAG="failure"
-module load "$IR_MOD_ENV"
-module load "$IR_MOD_APPTAINER"
+ir_load_modules
 
 RATE="${1:?usage: run_failure_mode.sh <request_rate>}"
 NREPLICAS="${IR_NREPLICAS:-4}"
@@ -104,8 +101,7 @@ cat > "$RESTART_SCRIPT" <<EOF
 type module >/dev/null 2>&1 || source /etc/profile
 source "${HERE}/env.sh"
 source "${HERE}/slurm/lib_replicas.sh"
-module load "${IR_MOD_ENV}" >/dev/null 2>&1
-module load "${IR_MOD_APPTAINER}" >/dev/null 2>&1
+ir_load_modules >/dev/null 2>&1
 for i in \$(seq 1 120); do
     used=\$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -i ${KILL_GPU} | tr -d ' ')
     [ "\$used" -lt 2000 ] && break

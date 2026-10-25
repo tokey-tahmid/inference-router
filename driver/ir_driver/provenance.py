@@ -1,6 +1,6 @@
 """Provenance capture for every raw artifact.
 
-Rule 2 of the workspace spec: every result carries provenance. The fields
+Measurement rule (see the README): every result carries provenance. The fields
 below are the ones that file names, plus the router- and topology-specific ones
 this project adds.
 
@@ -28,8 +28,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+# llm-inference-bench, checked out next to this repository; env.sh exports the
+# same default as IR_LOCKFILE, and site.env can override it.
 LOCKFILE_DEFAULT = Path(
-    "/home/users/u104240/apps/inference-work/llm-inference-bench/provision.lock.json"
+    os.environ.get(
+        "IR_LOCKFILE",
+        Path(__file__).resolve().parents[3] / "llm-inference-bench" / "provision.lock.json",
+    )
 )
 
 

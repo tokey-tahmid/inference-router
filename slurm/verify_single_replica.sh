@@ -18,14 +18,13 @@
 #      under the names vLLM 0.27.1 actually uses.
 #
 #SBATCH --job-name=ir-verify
-#SBATCH --account=p201466
 #SBATCH --partition=gpu
 #SBATCH --qos=test
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=128
 #SBATCH --time=00:30:00
-#SBATCH --output=/mnt/tier2/project/p201362/ttahmid/inference-work/logs/ir_verify_%j.out
+#SBATCH --output=logs/ir_verify_%j.out
 
 set -uo pipefail
 
@@ -37,8 +36,7 @@ fi
 
 find_repo() {
     local c
-    for c in "${IR_REPO:-}" "${SLURM_SUBMIT_DIR:-}" \
-             "/home/users/u104240/apps/inference-work/inference-router"; do
+    for c in "${IR_REPO:-}" "${SLURM_SUBMIT_DIR:-}"; do
         if [[ -n "$c" && -f "${c}/env.sh" ]]; then printf '%s' "$c"; return 0; fi
     done
     return 1
@@ -50,8 +48,7 @@ source "${HERE}/env.sh"
 source "${HERE}/slurm/lib_replicas.sh"
 
 export IR_TAG="verify"
-module load "$IR_MOD_ENV"
-module load "$IR_MOD_APPTAINER"
+ir_load_modules
 
 ir_log "host=$(hostname) job=${SLURM_JOB_ID}"
 nvidia-smi --query-gpu=index,name,memory.total,driver_version --format=csv,noheader

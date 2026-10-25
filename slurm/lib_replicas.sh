@@ -2,7 +2,7 @@
 # Shared helpers for launching a fleet of vLLM replicas and the router in front
 # of them. Sourced by the experiment batch scripts; not executable on its own.
 #
-# Topology facts this encodes (measured, see the workspace spec, not re-derived here):
+# Topology facts this encodes (measured in llm-inference-bench, not re-derived here):
 #   - 4x A100-SXM4-40GB per node, full NVLink NV4 mesh between every pair.
 #   - NUMA-local core sets per GPU:
 #       GPU0 -> 24-31,88-95   (NUMA 3)     GPU1 -> 8-15,72-79    (NUMA 1)
@@ -50,12 +50,13 @@ ir_launch_replica() {
 
     mkdir -p "$(dirname "$logf")"
 
-    # taskset pins the replica to its NUMA-local cores. This matters here more
-    # than in a single-replica benchmark: four co-located replicas that float
-    # across sockets contend for remote memory bandwidth on the prefill path,
-    # and P1 measured that co-location alone already costs +150% TTFT p50 and
-    # -34% throughput versus isolation. Pinning does not remove that cost, it
-    # keeps it from varying run to run.
+    # taskset pins the replica to its NUMA-local cores, so four co-located
+    # replicas never float across sockets and the placement is the same in
+    # every run. (An earlier version of this comment cited P1's measured cost of
+    # co-location, +150% TTFT p50 and -34% throughput. That finding was
+    # withdrawn on 2026-10-24: its four replicas shared one port, so they
+    # measured one server. Four independent copies on one node cost nothing
+    # measurable.)
     taskset -c "$cores" \
     apptainer exec --nv --cleanenv \
         --bind "${IR_DATA}:${IR_DATA}:rw" \

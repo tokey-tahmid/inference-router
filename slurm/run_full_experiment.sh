@@ -21,14 +21,13 @@
 # spending node-hours on the matrix if that is broken.
 #
 #SBATCH --job-name=ir-full
-#SBATCH --account=p201466
 #SBATCH --partition=gpu
 #SBATCH --qos=short
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=128
 #SBATCH --time=06:00:00
-#SBATCH --output=/mnt/tier2/project/p201362/ttahmid/inference-work/logs/ir_full_%j.out
+#SBATCH --output=logs/ir_full_%j.out
 
 set -uo pipefail
 
@@ -40,8 +39,7 @@ fi
 
 find_repo() {
     local c
-    for c in "${IR_REPO:-}" "${SLURM_SUBMIT_DIR:-}" \
-             "/home/users/u104240/apps/inference-work/inference-router"; do
+    for c in "${IR_REPO:-}" "${SLURM_SUBMIT_DIR:-}"; do
         if [[ -n "$c" && -f "${c}/env.sh" ]]; then printf '%s' "$c"; return 0; fi
     done
     return 1
@@ -53,8 +51,7 @@ source "${HERE}/env.sh"
 source "${HERE}/slurm/lib_replicas.sh"
 
 export IR_TAG="full"
-module load "$IR_MOD_ENV"
-module load "$IR_MOD_APPTAINER"
+ir_load_modules
 
 JOB="${SLURM_JOB_ID}"
 OUT="${IR_LOGS}/ir_full_${JOB}"
@@ -227,7 +224,7 @@ ir_log "DENSITY FINDING: ${DENSITY_RESULT}"
 
 # Recorded as a raw artifact so the topology decision is traceable, not a log line.
 "$PY" - "$RAW" "$JOB" "$NODE" "$DENSITY_RESULT" "$DENSITY_DETAIL" "$HERE" <<'DENSITY_PY'
-import json, sys, subprocess, datetime, pathlib
+import json, os, sys, subprocess, datetime, pathlib
 raw, job, node, result, detail, repo = sys.argv[1:7]
 def sh(c):
     try:
@@ -237,7 +234,7 @@ def sh(c):
 sha = sh(["git", "rev-parse", "HEAD"])
 if sha and sh(["git", "status", "--porcelain"]):
     sha += "-dirty"
-lock = json.load(open("/home/users/u104240/apps/inference-work/llm-inference-bench/provision.lock.json"))
+lock = json.load(open(os.environ["IR_LOCKFILE"]))
 img, mdl = lock["images"]["vllm"], lock["models"]["Qwen_Qwen2_5-7B-Instruct"]
 out = {
     "artifact_schema_version": 1, "kind": "replica_density_probe", "status": "ok",
@@ -291,7 +288,7 @@ nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader |
 start_router round_robin s3 "${CFG_SPECS[@]}" || exit 1
 curl -s http://127.0.0.1:8080/admin/fleet | "$PY" -m json.tool | sed 's/^/  /'
 
-TOPO="4x A100-SXM4-40GB on ${NODE}, one TP=1 vLLM replica per GPU at gpu_memory_utilization=0.90, each pinned to its NUMA-local cores; full NVLink NV4 mesh; single node. Replicas are co-located by design: P1 job 5162712 measured co-location alone costing +150.7% TTFT p50 and -34.1% throughput vs an isolated replica, so absolute latencies here are fleet numbers, not isolated-replica numbers."
+TOPO="4x A100-SXM4-40GB on ${NODE}, one TP=1 vLLM replica per GPU at gpu_memory_utilization=0.90, each pinned to its NUMA-local cores; full NVLink NV4 mesh; single node. Replicas are co-located by design."
 
 ############################################################ stage 4: calibrate
 ir_log "=============== STAGE 4: rate calibration against THIS fleet ==============="
@@ -320,8 +317,8 @@ ir_log "ladder: ${CAL_LADDER}"
 ir_log "calibration rc=$?"
 
 RATES="$("$PY" - "$CAL_DIR" <<'PYEOF'
-import sys, pathlib, json
-sys.path.insert(0, "/home/users/u104240/apps/inference-work/inference-router/driver")
+import os, sys, pathlib, json
+sys.path.insert(0, os.path.join(os.environ["IR_REPO"], "driver"))
 from ir_driver.pick_rates import load_calibration, pick, format_table
 rows = load_calibration(pathlib.Path(sys.argv[1]))
 res = pick(rows)

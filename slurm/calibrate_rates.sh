@@ -5,25 +5,24 @@
 #   sbatch slurm/calibrate_rates.sh
 #
 # The matrix asks for "4 request-rate points spanning underload to overload".
-# That is only meaningful relative to a measured saturation point. An arithmetic
-# guess would be wrong here in a specific and knowable way: P1 measured that
-# co-locating four single-GPU replicas costs -34% throughput versus isolation,
-# so a ladder derived from isolated-replica throughput would put every "overload"
-# point well inside the stable region and the matrix would measure four policies
-# that never contend.
+# That is only meaningful relative to a saturation point measured on this fleet,
+# with the router in front of it, rather than one derived from a single
+# replica. (An earlier version of this comment also argued that co-location
+# costs -34% throughput, citing P1. That finding was withdrawn on 2026-10-24,
+# because its four replicas shared one port; calibrating on the real fleet is
+# still the right method.)
 #
 # Method: a single rate ladder under round_robin at a middling sharing ratio,
 # short phases, N=1. We are locating a knee, not measuring a latency.
 #
 #SBATCH --job-name=ir-calib
-#SBATCH --account=p201466
 #SBATCH --partition=gpu
 #SBATCH --qos=short
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=128
 #SBATCH --time=01:30:00
-#SBATCH --output=/mnt/tier2/project/p201362/ttahmid/inference-work/logs/ir_calib_%j.out
+#SBATCH --output=logs/ir_calib_%j.out
 
 set -uo pipefail
 
@@ -35,8 +34,7 @@ fi
 
 find_repo() {
     local c
-    for c in "${IR_REPO:-}" "${SLURM_SUBMIT_DIR:-}" \
-             "/home/users/u104240/apps/inference-work/inference-router"; do
+    for c in "${IR_REPO:-}" "${SLURM_SUBMIT_DIR:-}"; do
         if [[ -n "$c" && -f "${c}/env.sh" ]]; then printf '%s' "$c"; return 0; fi
     done
     return 1
@@ -48,8 +46,7 @@ source "${HERE}/env.sh"
 source "${HERE}/slurm/lib_replicas.sh"
 
 export IR_TAG="calib"
-module load "$IR_MOD_ENV"
-module load "$IR_MOD_APPTAINER"
+ir_load_modules
 
 NREPLICAS="${IR_NREPLICAS:-4}"
 LADDER="${IR_LADDER:-1 2 4 8 12 16 24 32 48}"

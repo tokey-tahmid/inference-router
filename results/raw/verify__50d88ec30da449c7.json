@@ -2,7 +2,7 @@
   "artifact_schema_version": 1,
   "backend_image_digest": "sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967",
   "backend_image_pulled_utc": "2026-08-25T15:16:43Z",
-  "backend_image_sif": "/mnt/tier2/project/p201362/ttahmid/inference-work/images/vllm.sif",
+  "backend_image_sif": "${IR_DATA}/images/vllm.sif",
   "backend_name": "vllm",
   "backend_version": "0.27.1",
   "checks": {
@@ -29,7 +29,7 @@
           "id": "r0",
           "inflight": 0,
           "last_transition_unix_us": 0,
-          "placement": "node=mel2061,gpu=0",
+          "placement": "node=node2061,gpu=0",
           "queued": 0,
           "recoveries_total": 0,
           "upstream_errors_total": 0,
@@ -113,14 +113,14 @@
   },
   "cuda_version": "13.2",
   "driver_version": "595.91.07",
-  "exact_command_line": "/mnt/tier2/users/u104240/apps/inference-work/inference-router/driver/ir_driver/cli.py verify --router http://127.0.0.1:8080 --replicas r0=http://127.0.0.1:8100 --model-path /mnt/tier2/project/p201362/ttahmid/inference-work/hf_cache/hub/models--Qwen--Qwen2.5-7B-Instruct/snapshots/a09a35458c702b33eeacc393d103063234e8bc28 --served-name qwen2.5-7b-instruct --lockfile /home/users/u104240/apps/inference-work/llm-inference-bench/provision.lock.json --out-dir /mnt/tier2/users/u104240/apps/inference-work/inference-router/results/raw --rate 2.0 --num-requests 32",
+  "exact_command_line": "${HOME}/apps/inference-work/inference-router/driver/ir_driver/cli.py verify --router http://127.0.0.1:8080 --replicas r0=http://127.0.0.1:8100 --model-path ${IR_DATA}/hf_cache/hub/models--Qwen--Qwen2.5-7B-Instruct/snapshots/a09a35458c702b33eeacc393d103063234e8bc28 --served-name qwen2.5-7b-instruct --lockfile ${HOME}/apps/inference-work/llm-inference-bench/provision.lock.json --out-dir ${HOME}/apps/inference-work/inference-router/results/raw --rate 2.0 --num-requests 32",
   "full_config_dict": {
     "args": {
       "cmd": "verify",
-      "lockfile": "/home/users/u104240/apps/inference-work/llm-inference-bench/provision.lock.json",
-      "model_path": "/mnt/tier2/project/p201362/ttahmid/inference-work/hf_cache/hub/models--Qwen--Qwen2.5-7B-Instruct/snapshots/a09a35458c702b33eeacc393d103063234e8bc28",
+      "lockfile": "${HOME}/apps/inference-work/llm-inference-bench/provision.lock.json",
+      "model_path": "${IR_DATA}/hf_cache/hub/models--Qwen--Qwen2.5-7B-Instruct/snapshots/a09a35458c702b33eeacc393d103063234e8bc28",
       "num_requests": 32,
-      "out_dir": "/mnt/tier2/users/u104240/apps/inference-work/inference-router/results/raw",
+      "out_dir": "${HOME}/apps/inference-work/inference-router/results/raw",
       "rate": 2.0,
       "replicas": [
         "r0=http://127.0.0.1:8100"
@@ -138,7 +138,7 @@
   "gpu_count": 4,
   "gpu_memory_gb": 40.0,
   "gpu_model": "NVIDIA A100-SXM4-40GB",
-  "hostname": "mel2061",
+  "hostname": "node2061",
   "kernel": "4.18.0-553.158.1.el8_10.x86_64",
   "kind": "single_replica_verification",
   "model_id": "Qwen/Qwen2.5-7B-Instruct",
@@ -146,7 +146,7 @@
   "python_version": "3.12.14",
   "run_id": "50d88ec30da449c7",
   "slurm_job_id": "5215612",
-  "slurm_nodelist": "mel2061",
+  "slurm_nodelist": "node2061",
   "status": "ok",
   "utc_timestamp": "2026-09-16T10:11:45Z"
 }

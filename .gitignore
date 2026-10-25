@@ -5,3 +5,15 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 .venv/
+
+# Slurm writes its own job logs to logs/, which the repo keeps as an empty folder.
+logs/*
+!logs/.gitkeep
+*.log
+
+# Site settings, and the site-identifier lists used by scripts/check_public.sh
+# and scripts/scrub_private.py. They name local paths and identifiers, so they
+# are never committed.
+site.env
+.private-patterns
+.private-replacements
